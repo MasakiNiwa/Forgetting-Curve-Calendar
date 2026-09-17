@@ -346,21 +346,24 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         type: 'button',
         class: 'ed__shortcut',
         title: command?.label || label,
+        'aria-label': command?.label || label,
         // 押してもキーボードが閉じないようにする
         onMouseDown: (e) => e.preventDefault(),
         onClick: () => { editor.run(id); editor.el.focus({ preventScroll: true }); },
       },
-      h('span', { class: 'ed__shortcut-icon', html: icon(command?.icon || 'text', { size: 18 }) }),
-      h('span', {}, label)));
+      h('span', { class: 'ed__shortcut-icon', html: icon(command?.icon || 'text', { size: 20 }) }),
+      h('span', { class: 'ed__shortcut-label' }, label)));
     });
     shortcutBar.appendChild(h('button', {
       type: 'button',
       class: 'ed__shortcut',
+      title: 'その他の編集',
+      'aria-label': 'その他の編集',
       onMouseDown: (e) => e.preventDefault(),
       onClick: () => openToolsMenu(),
     },
-    h('span', { class: 'ed__shortcut-icon', html: icon('more', { size: 18 }) }),
-    h('span', {}, 'その他')));
+    h('span', { class: 'ed__shortcut-icon', html: icon('more', { size: 20 }) }),
+    h('span', { class: 'ed__shortcut-label' }, 'その他')));
   }
 
   function openToolsMenu() {
@@ -509,6 +512,16 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   };
   document.addEventListener('keydown', onKeyDown);
 
+  // キーボードが出て領域が縮んだとき、入力中の行を見失わないようにする
+  const onViewportResize = () => {
+    if (document.activeElement !== textarea) return;
+    const { start, end } = editor.selection;
+    requestAnimationFrame(() => {
+      try { textarea.setSelectionRange(start, end); } catch { /* noop */ }
+    });
+  };
+  window.visualViewport?.addEventListener('resize', onViewportResize);
+
   const onBeforeUnload = (event) => {
     if (!dirty) return;
     save();
@@ -522,6 +535,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       clearTimeout(saveTimer);
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('beforeunload', onBeforeUnload);
+      window.visualViewport?.removeEventListener('resize', onViewportResize);
       if (state.id) {
         positions.set(state.id, {
           start: editor.selection.start,
