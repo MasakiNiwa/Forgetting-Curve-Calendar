@@ -5,8 +5,8 @@
 import { SCHEMA_VERSION, APP_VERSION } from './config.js';
 import { isValidKey, todayKey } from './date.js';
 import {
-  DEFAULT_PRESET_ID, EASE_DEFAULT, buildSchedule, clampEase, resolveIntervals,
-  sanitizeIntervals, sortReviews,
+  DEFAULT_PRESET_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, localDayOf, refreshNote,
+  resolveIntervals, sanitizeIntervals,
 } from './curve.js';
 
 export function makeId(prefix = 'n') {
@@ -17,15 +17,17 @@ export function makeId(prefix = 'n') {
 }
 
 export const makeNoteId = () => makeId('n');
-export const makeReviewId = () => makeId('r');
+export const makeEventId = () => makeId('e');
 
 export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'system',            // system | light | dark
   presetId: DEFAULT_PRESET_ID,
-  customIntervals: [1, 3, 7, 14, 30, 60],
+  customIntervals: [1, 3, 7, 14, 30, 60, 120, 365, 1095],
   adaptive: true,
   weekStart: 0,               // 0=日曜, 1=月曜
   carryOverOverdue: true,
+  overdueDailyLimit: 10,      // 1 日に取り戻す期限切れの上限（0 = 制限なし）
+  hideBodyUntilRecall: true,  // 復習時に本文を隠して思い出してから開く
   showCreatedOnCalendar: true,
   defaultExportFormat: 'markdown',
 });
@@ -42,7 +44,7 @@ export function createEmptyData() {
 
 /**
  * 新しいメモを作る。作成と同時に忘却曲線の復習予定を生成する。
- * @param {object} input {title, body, tags, anchorDate, parentId, presetId}
+ * @param {object} input {title, cue, body, tags, anchorDate, parentId, presetId, intervals}
  * @param {object} settings
  */
 export function createNote(input, settings) {
@@ -53,10 +55,11 @@ export function createNote(input, settings) {
     ? sanitizeIntervals(input.intervals || settings.customIntervals)
     : resolveIntervals(presetId, settings);
 
-  return {
+  const note = {
     id: makeNoteId(),
     parentId: input.parentId || null,
     title: (input.title || '').trim(),
+    cue: (input.cue || '').trim(),
     body: (input.body || '').trim(),
     tags: normalizeTags(input.tags),
     anchorDate,
@@ -64,14 +67,12 @@ export function createNote(input, settings) {
     updatedAt: now,
     status: 'active',
     color: input.color || null,
-    schedule: {
-      presetId,
-      intervals,
-      ease: EASE_DEFAULT,
-      adaptive: settings.adaptive !== false,
-    },
-    reviews: buildSchedule(anchorDate, intervals, makeReviewId),
+    origin: { presetId, intervals },
+    schedule: { presetId, intervals, ease: EASE_DEFAULT, adaptive: settings.adaptive !== false },
+    events: [],
+    reviews: [],
   };
+  return refreshNote(note, { adaptive: settings.adaptive !== false });
 }
 
 export function normalizeTags(tags) {
@@ -95,11 +96,24 @@ export function displayTitle(note) {
 }
 
 /**
+ * 思い出すための手掛かり。
+ * 明示的な手掛かりがなければタイトル（＝本文 1 行目）を使う。
+ */
+export function recallCue(note) {
+  return note.cue?.trim() || displayTitle(note);
+}
+
+/** 手掛かりを見ただけでは答えが分からない状態か（隠す意味があるか） */
+export function hasHiddenContent(note) {
+  return Boolean(note.cue?.trim() ? note.body.trim() : bodyPreview(note));
+}
+
+/**
  * カード表示用の本文。
  * タイトル未設定のメモは本文 1 行目がタイトルになるため、その分を取り除いて返す。
  */
 export function bodyPreview(note) {
-  if (note.title) return note.body || '';
+  if (note.title || note.cue) return note.body || '';
   const lines = (note.body || '').split('\n');
   const firstIdx = lines.findIndex((l) => l.trim());
   if (firstIdx === -1) return '';
@@ -117,24 +131,48 @@ export function normalizeSettings(raw) {
   s.weekStart = s.weekStart === 1 ? 1 : 0;
   s.adaptive = s.adaptive !== false;
   s.carryOverOverdue = s.carryOverOverdue !== false;
+  s.hideBodyUntilRecall = s.hideBodyUntilRecall !== false;
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
   s.customIntervals = sanitizeIntervals(s.customIntervals);
+  const limit = Number(s.overdueDailyLimit);
+  s.overdueDailyLimit = Number.isFinite(limit) && limit >= 0 ? Math.round(limit) : 10;
   if (!['markdown', 'text', 'csv', 'json'].includes(s.defaultExportFormat)) {
     s.defaultExportFormat = 'markdown';
   }
   return s;
 }
 
-export function normalizeNote(raw) {
+function normalizeEvent(raw) {
+  if (!raw || typeof raw !== 'object' || !EVENT_TYPES.includes(raw.type)) return null;
+  const at = typeof raw.at === 'string' ? raw.at : new Date().toISOString();
+  const event = {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : makeEventId(),
+    type: raw.type,
+    at,
+    day: isValidKey(raw.day) ? raw.day : localDayOf(at),
+  };
+  if (raw.reviewKey) event.reviewKey = String(raw.reviewKey);
+  if (Number.isFinite(raw.step)) event.step = Math.max(0, Math.round(raw.step));
+  if (raw.type === 'rate') event.rating = ['known', 'vague', 'forgot'].includes(raw.rating) ? raw.rating : 'known';
+  if (raw.type === 'postpone' && isValidKey(raw.due)) event.due = raw.due;
+  if (raw.type === 'reschedule') {
+    event.intervals = sanitizeIntervals(raw.intervals);
+    event.presetId = raw.presetId || DEFAULT_PRESET_ID;
+  }
+  return event;
+}
+
+export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
   if (!raw || typeof raw !== 'object') return null;
   const now = new Date().toISOString();
   const anchorDate = isValidKey(raw.anchorDate) ? raw.anchorDate : todayKey();
-  const intervals = sanitizeIntervals(raw.schedule?.intervals);
+  const originIntervals = sanitizeIntervals(raw.origin?.intervals || raw.schedule?.intervals);
 
   const note = {
     id: typeof raw.id === 'string' && raw.id ? raw.id : makeNoteId(),
     parentId: typeof raw.parentId === 'string' ? raw.parentId : null,
     title: typeof raw.title === 'string' ? raw.title : '',
+    cue: typeof raw.cue === 'string' ? raw.cue : '',
     body: typeof raw.body === 'string' ? raw.body : '',
     tags: normalizeTags(raw.tags),
     anchorDate,
@@ -142,44 +180,32 @@ export function normalizeNote(raw) {
     updatedAt: raw.updatedAt || raw.createdAt || now,
     status: ['active', 'graduated', 'archived'].includes(raw.status) ? raw.status : 'active',
     color: raw.color || null,
-    schedule: {
-      presetId: raw.schedule?.presetId || DEFAULT_PRESET_ID,
-      intervals,
-      ease: clampEase(raw.schedule?.ease),
-      adaptive: raw.schedule?.adaptive !== false,
+    origin: {
+      presetId: raw.origin?.presetId || raw.schedule?.presetId || DEFAULT_PRESET_ID,
+      intervals: originIntervals,
     },
-    reviews: Array.isArray(raw.reviews)
-      ? raw.reviews.map(normalizeReview).filter(Boolean)
-      : buildSchedule(anchorDate, intervals, makeReviewId),
+    schedule: {
+      presetId: raw.schedule?.presetId || raw.origin?.presetId || DEFAULT_PRESET_ID,
+      intervals: sanitizeIntervals(raw.schedule?.intervals || originIntervals),
+      ease: clampEase(raw.schedule?.ease),
+      adaptive: settings.adaptive !== false,
+    },
+    events: Array.isArray(raw.events) ? raw.events.map(normalizeEvent).filter(Boolean) : [],
+    reviews: [],
   };
 
-  if (!note.reviews.length && note.status === 'active') {
-    note.reviews = buildSchedule(anchorDate, intervals, makeReviewId);
-  }
-  if (note.status !== 'archived') {
-    note.status = note.reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
-  }
-  return sortReviews(note);
-}
-
-function normalizeReview(raw) {
-  if (!raw || typeof raw !== 'object' || !isValidKey(raw.due)) return null;
-  return {
-    id: typeof raw.id === 'string' && raw.id ? raw.id : makeReviewId(),
-    step: Number.isFinite(raw.step) ? Math.max(0, Math.round(raw.step)) : 0,
-    due: raw.due,
-    status: ['pending', 'done', 'skipped'].includes(raw.status) ? raw.status : 'pending',
-    rating: ['known', 'vague', 'forgot'].includes(raw.rating) ? raw.rating : null,
-    completedAt: raw.completedAt || null,
-    extra: raw.extra === true,
-  };
+  return refreshNote(note, { adaptive: settings.adaptive !== false });
 }
 
 /** 任意の入力データをアプリが扱える形へ整える */
 export function normalizeData(raw) {
   const base = createEmptyData();
   if (!raw || typeof raw !== 'object') return base;
-  const notes = Array.isArray(raw.notes) ? raw.notes.map(normalizeNote).filter(Boolean) : [];
+  const settings = normalizeSettings(raw.settings);
+  const notes = Array.isArray(raw.notes)
+    ? raw.notes.map((n) => normalizeNote(n, settings)).filter(Boolean)
+    : [];
+
   // 親が存在しない子メモは孤児にならないよう parentId を落とす
   const ids = new Set(notes.map((n) => n.id));
   notes.forEach((n) => { if (n.parentId && !ids.has(n.parentId)) n.parentId = null; });
@@ -187,7 +213,7 @@ export function normalizeData(raw) {
   return {
     schemaVersion: SCHEMA_VERSION,
     notes,
-    settings: normalizeSettings(raw.settings),
+    settings,
     meta: {
       createdAt: raw.meta?.createdAt || base.meta.createdAt,
       updatedAt: new Date().toISOString(),

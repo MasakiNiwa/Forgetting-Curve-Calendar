@@ -3,8 +3,10 @@ import { h, button } from '../dom.js';
 import { icon } from '../icons.js';
 import { curvePreview } from '../components.js';
 import { openNoteEditor } from '../editor.js';
+import { startReviewSession } from '../reviewSession.js';
 import { APP_NAME, APP_TAGLINE, APP_VERSION, RELEASE_DATE, REPO_URL, ISSUES_URL, SCHEMA_VERSION } from '../../core/config.js';
 import { PRESETS, RATINGS } from '../../core/curve.js';
+import { formatDuration } from '../../core/date.js';
 
 export function renderHelp(store) {
   const root = h('div', { class: 'page page--narrow' });
@@ -32,34 +34,59 @@ export function renderHelp(store) {
       h('h3', {}, h('span', { html: icon('play', { size: 18 }), style: { display: 'flex' } }), '使い方'),
       h('ol', {},
         h('li', {}, '右下の「＋」ボタンからメモを書きます。'),
-        h('li', {}, '保存すると、1日後・3日後・7日後…と未来の日付に復習が自動で並びます。'),
-        h('li', {}, 'カレンダーで日付を選ぶと、その日に思い出し直すメモの一覧が出ます。'),
-        h('li', {}, 'メモを読む前に内容を思い出し、答え合わせをしてから'
-          + '「覚えていた / あいまい / 忘れた」を記録します。'),
-        h('li', {}, '記録に応じて、残りの復習日が自動で調整されます。'))),
-    button('さっそくメモを書く', {
-      className: 'btn btn--block',
-      icon: icon('plus', { size: 18 }),
-      onClick: () => openNoteEditor(store),
-    })));
+        h('li', {}, '保存すると、1日後・3日後・7日後…と、数年先まで復習が自動で並びます。'),
+        h('li', {}, 'カレンダー上部の「今日の記憶」から［思い出し始める］を押します。'),
+        h('li', {}, 'まず手掛かりだけが表示されます。内容を思い出してから［内容を見る］で答え合わせ。'),
+        h('li', {}, '「覚えていた / あいまい / 忘れた」を記録すると、残りの復習日が自動で調整されます。'))),
+    h('div', { class: 'note-card__actions', style: { marginTop: '0' } },
+      button('さっそくメモを書く', {
+        className: 'btn',
+        icon: icon('plus', { size: 18 }),
+        onClick: () => openNoteEditor(store),
+      }),
+      button('今日の復習を始める', {
+        className: 'btn btn--tonal',
+        icon: icon('play', { size: 18 }),
+        onClick: () => startReviewSession(store),
+      }))));
+
+  /* ---------------- 思い出す体験 ---------------- */
+  root.appendChild(h('section', { class: 'card' },
+    h('div', { class: 'help-section' },
+      h('h3', {}, h('span', { html: icon('eye', { size: 18 }), style: { display: 'flex' } }), '「読む」ではなく「思い出す」'),
+      h('p', {}, '復習のとき、このアプリは最初に手掛かりだけを見せます。'
+        + '本文をすぐ読んでしまうと「知っている気がする」だけで終わってしまうためです。'),
+      h('p', {}, 'メモには任意で「思い出すための手掛かり」を書けます。たとえば――'),
+      h('div', { class: 'help-example' },
+        h('div', {}, h('b', {}, '手掛かり：'), '減価償却の3つの方法は？'),
+        h('div', {}, h('b', {}, '本文：'), '定額法、定率法、生産高比例法')),
+      h('p', { class: 'field__hint' },
+        '手掛かりを省いた場合はタイトル（本文の1行目）が手掛かりになります。'
+        + 'すぐ本文を出したいときは、設定の「思い出してから内容を開く」をオフにしてください。'))));
 
   /* ---------------- 忘却曲線 ---------------- */
   const preset = PRESETS[0];
   root.appendChild(h('section', { class: 'card' },
     h('div', { class: 'help-section' },
       h('h3', {}, h('span', { html: icon('curve', { size: 18 }), style: { display: 'flex' } }), '忘却曲線のしくみ'),
-      h('p', {}, '記憶は時間とともに薄れますが、薄れかけたところで思い出すと保持期間が伸びます。'
-        + '下のグラフは、復習のたびに記憶の減り方がゆるやかになる様子を表しています。'),
+      h('p', {}, '記憶は時間とともに薄れますが、薄れかけたところで思い出すと保持期間が伸びます（間隔反復）。'
+        + '下のグラフは、復習のたびに記憶の減り方がゆるやかになる様子のイメージです。'),
       curvePreview(preset.intervals),
-      h('p', { style: { marginTop: '8px' } }, `標準プリセットでは ${preset.intervals.map((d) => `${d}日後`).join('、')} の計 ${preset.intervals.length} 回の復習が設定されます。`),
+      h('p', { style: { marginTop: '8px' } },
+        `標準プリセットでは ${preset.intervals.map((d) => formatDuration(d)).join(' → ')} の計 ${preset.intervals.length} 回。`
+        + '間隔は数日から数年へと広がっていくので、回数の割に長く付き合えます。'),
       h('p', {}, 'プリセットは設定画面で変更できます。メモごとに個別の曲線を設定することもできます。'),
+      h('div', { class: 'banner banner--info' },
+        h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
+        h('span', {}, 'このアプリは「忘れること」を前提に、適度な間隔で思い出す機会を作る道具です。'
+          + '表示される曲線や復習日は、記憶を厳密に予測するものではありません。')),
       h('table', { class: 'help-table' },
         h('thead', {}, h('tr', {},
           h('th', {}, 'プリセット'), h('th', {}, '回数'), h('th', {}, '内容'))),
         h('tbody', {}, ...PRESETS.filter((p) => p.id !== 'custom').map((p) => h('tr', {},
           h('td', {}, p.name),
           h('td', {}, `${p.intervals.length}回`),
-          h('td', {}, `${p.intervals.join(' / ')} 日後`))))))));
+          h('td', {}, `最長 ${formatDuration(p.intervals[p.intervals.length - 1])}後まで`))))))));
 
   /* ---------------- 想起の記録 ---------------- */
   root.appendChild(h('section', { class: 'card' },
@@ -97,12 +124,16 @@ export function renderHelp(store) {
   root.appendChild(h('section', { class: 'card' },
     h('div', { class: 'help-section' },
       h('h3', {}, h('span', { html: icon('help', { size: 18 }), style: { display: 'flex' } }), 'よくある質問'),
-      faq('復習をためてしまいました。', '設定の「期限切れを今日に繰り越す」が有効なら、'
-        + 'やり残した復習は今日のタスクの先頭にまとめて表示されます。多すぎるときは「忘れた」を選んで組み直すか、'
-        + 'メモの「⋮」→「復習を今日からやり直す」でリセットできます。'),
+      faq('復習をためてしまいました。', 'たまった分は「思い出し待ち」として保たれ、'
+        + '設定した件数（既定では1日10件）ずつ今日のキューに並びます。一度に全部やる必要はありません。'
+        + '一気に片付けたいときは、設定の「1日に取り戻す件数」を「すべて出す」に変えてください。'),
+      faq('記録を間違えました。', '記録直後に出る「取り消す」か、そのカードの「取り消す」で戻せます。'
+        + '復習の記録は出来事として順番に保存されていて、取り消すと定着度も未来の予定も記録前の状態に正確に戻ります。'),
       faq('復習が全部終わったメモはどうなりますか？', '「定着」として扱われ、カレンダーからは外れます。'
         + '一覧の「定着」タブから確認でき、「もう一周する」でいつでも再開できます。'),
-      faq('通知は来ますか？', 'v0.1 では通知機能はありません。今後のバージョンで、'
+      faq('何年も先の予定を見たいです。', 'カレンダー上部の年月表示をタップすると、年と月を直接選べます。'
+        + '「最後の復習」を押すと、いちばん先の予定がある月まで飛べます。'),
+      faq('通知は来ますか？', '現時点では通知機能はありません。今後のバージョンで、'
         + 'ホーム画面に追加できる PWA 化と合わせて対応を予定しています。'))));
 
   /* ---------------- バージョン情報 ---------------- */

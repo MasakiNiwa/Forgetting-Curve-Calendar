@@ -82,6 +82,19 @@ export function formatRelative(key, base = todayKey()) {
   return `${-d}日前`;
 }
 
+/**
+ * 日数を人が読める長さに直す。'3日' / '2週間' / '6ヶ月' / '5年'
+ * 年単位まで伸びる忘却曲線を扱うため、遠い間隔ほど粗い単位で表す。
+ */
+export function formatDuration(days) {
+  const d = Math.round(days);
+  if (d < 7) return `${d}日`;
+  if (d < 30) return `${Math.round(d / 7)}週間`;
+  if (d < 365) return `${Math.round(d / 30)}ヶ月`;
+  const years = d / 365;
+  return years % 1 < 0.1 || years >= 10 ? `${Math.round(years)}年` : `${years.toFixed(1)}年`;
+}
+
 export function formatDateTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);

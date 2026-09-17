@@ -1,24 +1,27 @@
 /**
  * 永続化層。
  *
- * StorageAdapter インタフェース:
- *   load(): object|null
- *   save(data): void
- *   clear(): void
+ * StorageAdapter インタフェース（すべて非同期）:
+ *   async load(): object|null
+ *   async save(data): void
+ *   async clear(): void
  *   readonly id: string
+ *   readonly persistent: boolean   // 端末に残るか（false ならタブを閉じると消える）
  *
- * 将来のクラウド同期・ファイル保存はこのインタフェースを実装したアダプタを
- * setAdapter() で差し替えるだけで対応できるようにしている。
+ * IndexedDB やクラウド同期を将来足せるよう、同期実装でも Promise を返す形に
+ * 揃えてある。差し替えは store.setAdapter() だけで済む。
  */
 import { STORAGE_KEY } from './config.js';
 
 export class LocalStorageAdapter {
   constructor(key = STORAGE_KEY) {
     this.id = 'localStorage';
+    this.label = 'このブラウザ（端末内）';
+    this.persistent = true;
     this.key = key;
   }
 
-  load() {
+  async load() {
     try {
       const raw = window.localStorage.getItem(this.key);
       return raw ? JSON.parse(raw) : null;
@@ -28,11 +31,11 @@ export class LocalStorageAdapter {
     }
   }
 
-  save(data) {
+  async save(data) {
     window.localStorage.setItem(this.key, JSON.stringify(data));
   }
 
-  clear() {
+  async clear() {
     window.localStorage.removeItem(this.key);
   }
 }
@@ -41,12 +44,14 @@ export class LocalStorageAdapter {
 export class MemoryAdapter {
   constructor() {
     this.id = 'memory';
+    this.label = 'メモリ（保存されません）';
+    this.persistent = false;
     this.data = null;
   }
 
-  load() { return this.data; }
-  save(data) { this.data = JSON.parse(JSON.stringify(data)); }
-  clear() { this.data = null; }
+  async load() { return this.data; }
+  async save(data) { this.data = JSON.parse(JSON.stringify(data)); }
+  async clear() { this.data = null; }
 }
 
 export function createDefaultAdapter() {

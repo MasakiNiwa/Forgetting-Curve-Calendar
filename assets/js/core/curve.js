@@ -2,10 +2,14 @@
  * 忘却曲線エンジン。
  *
  * このモジュールは純関数のみで構成する（DOM・ストレージに依存しない）。
- * 将来 SM-2 / FSRS などのアルゴリズムを追加する場合は
- *   - プリセットを PRESETS に足す
- *   - rescheduleAfterReview を差し替え可能なストラテジとして export する
- * の 2 点で拡張できる。
+ *
+ * ## スケジュールの決め方（v0.2 でイベント方式へ変更）
+ *
+ * 復習予定は「保存された結果」ではなく、
+ *   起点 (origin) + 出来事の並び (events) → 再生 (replay) → 現在の予定 (reviews)
+ * として毎回導出する。想起結果の記録・取り消し・曲線の変更はすべて events の
+ * 追加／削除として表現されるため、取り消しても過去の状態へ正確に戻れる。
+ * 別のアルゴリズム（FSRS 等）を足す場合も、replay の中身を差し替えるだけで済む。
  */
 import { addDays, diffDays, todayKey } from './date.js';
 
@@ -14,36 +18,39 @@ export const PRESETS = [
   {
     id: 'standard',
     name: '標準',
-    description: 'エビングハウスの忘却曲線に沿った王道の間隔。まず迷ったらこれ。',
-    intervals: [1, 3, 7, 14, 30, 60, 120],
+    description: '間隔反復の標準的な配分。数日 → 数週間 → 数ヶ月 → 数年と、少しずつ間隔を広げます。',
+    intervals: [1, 3, 7, 14, 30, 60, 120, 240, 480, 960, 1920],
   },
   {
     id: 'intensive',
     name: '集中',
-    description: '短期間に厚く復習する。試験前や覚え込みたいことに。',
-    intervals: [1, 2, 4, 7, 12, 20, 32, 50],
+    description: '最初の 1 ヶ月を厚く復習してから、年単位へ移行します。試験前や覚え込みたいことに。',
+    intervals: [1, 2, 4, 7, 12, 20, 32, 50, 90, 180, 365, 730, 1460],
   },
   {
     id: 'light',
     name: 'ゆるめ',
     description: '回数は少なめ。日々のメモを忘れた頃に見返したいときに。',
-    intervals: [1, 7, 30, 90, 180],
+    intervals: [1, 7, 30, 90, 180, 365, 730, 1460, 2920],
   },
   {
-    id: 'longterm',
-    name: '長期定着',
-    description: '1 年かけてゆっくり定着させる。知識を長く保ちたいときに。',
-    intervals: [1, 3, 7, 21, 60, 180, 365],
+    id: 'lifelong',
+    name: '一生もの',
+    description: '30 年先まで続く長い曲線。忘れた頃に、何度でも再会します。',
+    intervals: [1, 3, 7, 21, 60, 180, 365, 730, 1460, 2920, 5840, 10950],
   },
   {
     id: 'custom',
     name: 'カスタム',
-    description: '自分で間隔を決める。',
-    intervals: [1, 3, 7, 14, 30, 60],
+    description: '自分で間隔を決めます。年単位の間隔も設定できます。',
+    intervals: [1, 3, 7, 14, 30, 60, 120, 365, 1095],
   },
 ];
 
 export const DEFAULT_PRESET_ID = 'standard';
+
+/** 間隔として許す最大日数（約 100 年） */
+export const MAX_INTERVAL_DAYS = 36500;
 
 /** 想起結果の定義 */
 export const RATINGS = {
@@ -60,10 +67,7 @@ export function getPreset(presetId) {
   return PRESETS.find((p) => p.id === presetId) || PRESETS[0];
 }
 
-/**
- * 設定からプリセットの実効間隔を取り出す。
- * custom の場合は設定側の値を使う。
- */
+/** 設定からプリセットの実効間隔を取り出す（custom は設定側の値を使う） */
 export function resolveIntervals(presetId, settings = {}) {
   if (presetId === 'custom') {
     return sanitizeIntervals(settings.customIntervals || getPreset('custom').intervals);
@@ -75,7 +79,7 @@ export function resolveIntervals(presetId, settings = {}) {
 export function sanitizeIntervals(list) {
   const cleaned = (Array.isArray(list) ? list : [])
     .map((n) => Math.round(Number(n)))
-    .filter((n) => Number.isFinite(n) && n >= 1 && n <= 3650);
+    .filter((n) => Number.isFinite(n) && n >= 1 && n <= MAX_INTERVAL_DAYS);
   const unique = [...new Set(cleaned)].sort((a, b) => a - b);
   return unique.length ? unique : [1, 3, 7];
 }
@@ -87,11 +91,11 @@ export function clampEase(ease) {
 
 /**
  * 起点日と間隔から復習予定を生成する。
- * @returns {Array<{step:number, due:string, status:string, rating:null, extra:boolean}>}
+ * id は replay 内の生成順で決まる安定キー（g0, g1, …）。
  */
-export function buildSchedule(anchorDate, intervals, makeId) {
+export function buildSchedule(anchorDate, intervals, makeKey) {
   return intervals.map((days, step) => ({
-    id: makeId(),
+    id: makeKey(),
     step,
     due: addDays(anchorDate, days),
     status: 'pending',
@@ -101,143 +105,162 @@ export function buildSchedule(anchorDate, intervals, makeId) {
   }));
 }
 
+/* ------------------------------------------------------------------ */
+/* イベント                                                            */
+/* ------------------------------------------------------------------ */
+
+export const EVENT_TYPES = ['rate', 'skip', 'postpone', 'restart', 'reschedule'];
+
 /**
- * 復習の想起結果を反映し、未完了の復習を再スケジュールする。
- * note は破壊的に更新する（呼び出し側で clone 済みの前提）。
+ * 出来事を作る。`day` はローカル日付（スケジュール計算の基準）、
+ * `at` は記録時刻（表示・並び替え用）。
+ */
+export function createEvent(type, payload = {}, at = new Date()) {
+  const iso = at instanceof Date ? at.toISOString() : String(at);
+  const day = payload.day || localDayOf(iso);
+  return { type, at: iso, day, ...payload };
+}
+
+export function localDayOf(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return todayKey();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+/**
+ * 起点とイベント列から、現在の復習予定を再生する。
  *
- * @param {object} note
- * @param {string} reviewId
- * @param {'known'|'vague'|'forgot'} rating
- * @param {{adaptive:boolean}} options
- * @param {() => string} makeId
- * @returns {object} 更新後の note
+ * @param {{anchorDate:string, origin:{presetId:string, intervals:number[]}, events:Array}} note
+ * @param {{adaptive?:boolean}} options
+ * @returns {{reviews:Array, ease:number, intervals:number[], presetId:string, status:string}}
  */
-export function applyReviewResult(note, reviewId, rating, options, makeId) {
-  const review = note.reviews.find((r) => r.id === reviewId);
-  if (!review) return note;
+export function replay(note, { adaptive = true } = {}) {
+  let counter = 0;
+  const makeKey = () => `g${counter++}`;
 
-  const now = new Date().toISOString();
-  const completedKey = todayKey();
-  const ratingDef = RATINGS[rating] || RATINGS.known;
+  let intervals = sanitizeIntervals(note.origin?.intervals);
+  let presetId = note.origin?.presetId || DEFAULT_PRESET_ID;
+  let ease = EASE_DEFAULT;
+  let reviews = buildSchedule(note.anchorDate, intervals, makeKey);
 
-  review.status = 'done';
-  review.rating = ratingDef.id;
-  review.completedAt = now;
+  // 出来事は記録された順（因果の順）にそのまま再生する
+  const events = (note.events || []).filter((e) => e && EVENT_TYPES.includes(e.type));
 
-  const adaptive = options?.adaptive !== false && note.schedule.adaptive !== false;
-  if (adaptive) {
-    note.schedule.ease = clampEase((note.schedule.ease ?? EASE_DEFAULT) + ratingDef.easeDelta);
-  }
+  const resolve = (ev) => {
+    const byKey = reviews.find((r) => r.id === ev.reviewKey);
+    if (byKey) return byKey;
+    // 旧データ（キーを持たないイベント）は同じステップの未完了分に当てる
+    return reviews.find((r) => r.status === 'pending' && r.step === ev.step) || null;
+  };
 
-  const intervals = sanitizeIntervals(note.schedule.intervals);
-  const factor = adaptive ? (note.schedule.ease ?? EASE_DEFAULT) / EASE_DEFAULT : 1;
-  const step = Math.min(review.step, intervals.length - 1);
-  const pending = note.reviews.filter((r) => r.status === 'pending');
+  events.forEach((ev) => {
+    switch (ev.type) {
+      case 'rate': {
+        const target = resolve(ev);
+        if (!target || target.status !== 'pending') break;
+        const ratingDef = RATINGS[ev.rating] || RATINGS.known;
+        target.status = 'done';
+        target.rating = ratingDef.id;
+        target.completedAt = ev.at;
+        if (!adaptive) break;
 
-  // adaptive が無効なときは、作成時に決めた予定をそのまま保つ
-  if (adaptive && ratingDef.behavior === 'restart') {
-    // 完了日を新たな起点にして最初から組み直す
-    note.reviews = note.reviews.filter((r) => r.status !== 'pending');
-    buildSchedule(completedKey, intervals, makeId).forEach((r) => note.reviews.push(r));
-  } else if (adaptive) {
-    // 残りのステップを完了日基準でずらす
-    pending.forEach((r) => {
-      const base = intervals[Math.min(r.step, intervals.length - 1)] - intervals[step];
-      const shifted = Math.max(1, Math.round(base * factor));
-      r.due = addDays(completedKey, shifted);
-    });
+        ease = clampEase(ease + ratingDef.easeDelta);
+        const factor = ease / EASE_DEFAULT;
+        const step = Math.min(target.step, intervals.length - 1);
 
-    if (ratingDef.behavior === 'repeat') {
-      // 同じステップをもう一度、短い間隔で挟む
-      const gap = Math.max(1, Math.round((intervals[step] * 0.5) * factor));
-      note.reviews.push({
-        id: makeId(),
-        step,
-        due: addDays(completedKey, gap),
-        status: 'pending',
-        rating: null,
-        completedAt: null,
-        extra: true,
-      });
+        if (ratingDef.behavior === 'restart') {
+          reviews = reviews.filter((r) => r.status !== 'pending');
+          buildSchedule(ev.day, intervals, makeKey).forEach((r) => reviews.push(r));
+          break;
+        }
+
+        reviews.filter((r) => r.status === 'pending').forEach((r) => {
+          const base = intervals[Math.min(r.step, intervals.length - 1)] - intervals[step];
+          r.due = addDays(ev.day, Math.max(1, Math.round(base * factor)));
+        });
+
+        if (ratingDef.behavior === 'repeat') {
+          const gap = Math.max(1, Math.round(intervals[step] * 0.5 * factor));
+          reviews.push({
+            id: makeKey(),
+            step,
+            due: addDays(ev.day, gap),
+            status: 'pending',
+            rating: null,
+            completedAt: null,
+            extra: true,
+          });
+        }
+        break;
+      }
+
+      case 'skip': {
+        const target = resolve(ev);
+        if (!target || target.status !== 'pending') break;
+        target.status = 'skipped';
+        target.completedAt = ev.at;
+        break;
+      }
+
+      case 'postpone': {
+        const target = resolve(ev);
+        if (!target || target.status !== 'pending' || !ev.due) break;
+        target.due = ev.due;
+        break;
+      }
+
+      case 'restart': {
+        reviews = reviews.filter((r) => r.status !== 'pending');
+        ease = EASE_DEFAULT;
+        buildSchedule(ev.day, intervals, makeKey).forEach((r) => reviews.push(r));
+        break;
+      }
+
+      case 'reschedule': {
+        intervals = sanitizeIntervals(ev.intervals);
+        presetId = ev.presetId || presetId;
+        const doneSteps = reviews.filter((r) => r.status !== 'pending').map((r) => r.step);
+        const maxDone = doneSteps.length ? Math.max(...doneSteps) : -1;
+        reviews = reviews.filter((r) => r.status !== 'pending');
+        buildSchedule(note.anchorDate, intervals, makeKey)
+          .filter((r) => r.step > maxDone)
+          .forEach((r) => reviews.push(r));
+        break;
+      }
+
+      default:
+        break;
     }
-  }
+  });
 
-  sortReviews(note);
-  note.status = note.reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
-  note.updatedAt = now;
-  return note;
-}
-
-/** 復習をスキップする（曲線は変更しない） */
-export function skipReview(note, reviewId) {
-  const review = note.reviews.find((r) => r.id === reviewId);
-  if (!review) return note;
-  review.status = 'skipped';
-  review.completedAt = new Date().toISOString();
-  note.status = note.reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
-  note.updatedAt = new Date().toISOString();
-  return note;
-}
-
-/** 完了/スキップを取り消して pending に戻す */
-export function undoReview(note, reviewId) {
-  const review = note.reviews.find((r) => r.id === reviewId);
-  if (!review) return note;
-  review.status = 'pending';
-  review.rating = null;
-  review.completedAt = null;
-  note.status = 'active';
-  note.updatedAt = new Date().toISOString();
-  return note;
-}
-
-/** 復習を今日から n 日後へ延期する */
-export function postponeReview(note, reviewId, days = 1) {
-  const review = note.reviews.find((r) => r.id === reviewId);
-  if (!review) return note;
-  review.due = addDays(todayKey(), Math.max(1, days));
-  sortReviews(note);
-  note.updatedAt = new Date().toISOString();
-  return note;
-}
-
-/** 定着済みのメモの曲線を、今日を起点に組み直す */
-export function restartSchedule(note, intervals, makeId) {
-  const list = sanitizeIntervals(intervals || note.schedule.intervals);
-  note.schedule.intervals = list;
-  note.schedule.ease = EASE_DEFAULT;
-  note.reviews = note.reviews.filter((r) => r.status !== 'pending');
-  buildSchedule(todayKey(), list, makeId).forEach((r) => note.reviews.push(r));
-  sortReviews(note);
-  note.status = 'active';
-  note.updatedAt = new Date().toISOString();
-  return note;
+  reviews.sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : a.step - b.step));
+  const status = reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
+  return { reviews, ease, intervals, presetId, status };
 }
 
 /**
- * メモの間隔設定を変更し、未完了の復習を作り直す。
- * 完了済みの履歴は保持する。
+ * replay の結果をメモへ書き戻す（reviews / schedule は導出値のキャッシュ）。
+ * アーカイブ状態は再生で上書きしない。
  */
-export function rewriteSchedule(note, presetId, intervals, makeId) {
-  const list = sanitizeIntervals(intervals);
-  note.schedule.presetId = presetId;
-  note.schedule.intervals = list;
-  const doneSteps = note.reviews.filter((r) => r.status !== 'pending').map((r) => r.step);
-  const maxDone = doneSteps.length ? Math.max(...doneSteps) : -1;
-  note.reviews = note.reviews.filter((r) => r.status !== 'pending');
-  buildSchedule(note.anchorDate, list, makeId)
-    .filter((r) => r.step > maxDone)
-    .forEach((r) => note.reviews.push(r));
-  sortReviews(note);
-  note.status = note.reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
-  note.updatedAt = new Date().toISOString();
+export function refreshNote(note, options = {}) {
+  const result = replay(note, options);
+  note.reviews = result.reviews;
+  note.schedule = {
+    presetId: result.presetId,
+    intervals: result.intervals,
+    ease: result.ease,
+    adaptive: options.adaptive !== false,
+  };
+  if (note.status !== 'archived') note.status = result.status;
   return note;
 }
 
-export function sortReviews(note) {
-  note.reviews.sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : a.step - b.step));
-  return note;
-}
+/* ------------------------------------------------------------------ */
+/* 参照系                                                              */
+/* ------------------------------------------------------------------ */
 
 /** 次に控えている復習 */
 export function nextReview(note) {
@@ -251,21 +274,26 @@ export function progressOf(note) {
   return done / total;
 }
 
+/** overdue 判定 */
+export function isOverdue(review, base = todayKey()) {
+  return review.status === 'pending' && diffDays(base, review.due) < 0;
+}
+
 /**
  * 忘却曲線（保持率）のイメージを表す折れ線。プレビュー描画専用。
  *
  * R = e^(-t / S) の指数的減衰を、復習のたびに保持力 S が伸びる形で描く。
- * 実際のスケジューリングには使わない（あくまで説明用のグラフ）。
+ * 記憶を厳密に予測するものではなく、間隔の広がり方を見せるための図。
  */
-export function retentionSeries(intervals, ease = EASE_DEFAULT, samples = 240) {
+export function retentionSeries(intervals, ease = EASE_DEFAULT, samples = 320) {
   const list = sanitizeIntervals(intervals);
   const horizon = list[list.length - 1] * 1.3;
   const stepSize = horizon / samples;
-  // 次の復習までにおよそ半分まで落ちるように保持力を決める
-  const decayTarget = 0.7;
+  const decayTarget = 0.7; // 次の復習までにおよそ半分まで落ちる
   const strengthFor = (idx) => {
     const from = idx === 0 ? 0 : list[idx - 1];
-    const to = list[idx] ?? (list[list.length - 1] + (list[list.length - 1] - (list[list.length - 2] ?? 0)));
+    const last = list[list.length - 1];
+    const to = list[idx] ?? (last + (last - (list[list.length - 2] ?? 0)));
     return Math.max(0.4, (to - from) / decayTarget) * (ease / EASE_DEFAULT);
   };
 
@@ -286,9 +314,4 @@ export function retentionSeries(intervals, ease = EASE_DEFAULT, samples = 240) {
     points.push({ t, r: Math.exp(-(t - last) / strength), review: false });
   }
   return points;
-}
-
-/** overdue 判定 */
-export function isOverdue(review, base = todayKey()) {
-  return review.status === 'pending' && diffDays(base, review.due) < 0;
 }

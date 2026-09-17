@@ -2,15 +2,17 @@
  * アプリ状態の単一の真実の源。
  * UI は subscribe() で購読し、変更通知を受けて再描画する。
  * ドメイン操作はすべてこのモジュール経由で行う（UI から直接データを触らない）。
+ *
+ * 復習スケジュールはメモに積んだ出来事 (events) から毎回導出する（curve.js の replay）。
+ * そのため「取り消す」は最後の出来事を取り除くだけで、ease も未来の予定も正確に戻る。
  */
 import { APP_VERSION } from './config.js';
 import { addDays, diffDays, todayKey } from './date.js';
 import {
-  applyReviewResult, isOverdue, nextReview, postponeReview, restartSchedule,
-  resolveIntervals, rewriteSchedule, sanitizeIntervals, skipReview, sortReviews, undoReview,
+  createEvent, isOverdue, nextReview, refreshNote, resolveIntervals, sanitizeIntervals,
 } from './curve.js';
 import {
-  createEmptyData, createNote, makeReviewId, normalizeData, normalizeNote,
+  createEmptyData, createNote, makeEventId, normalizeData, normalizeNote,
   normalizeSettings, normalizeTags,
 } from './models.js';
 import { migrate } from './migrations.js';
@@ -26,24 +28,31 @@ export class Store {
 
   /* ---------------------------------------------------------- lifecycle */
 
-  load() {
-    const raw = this.adapter.load();
+  async load() {
+    const raw = await this.adapter.load();
     this.data = raw ? normalizeData(migrate(raw)) : createEmptyData();
     this._index = null;
     return this.data;
   }
 
   /** アダプタを差し替える（将来の同期実装用） */
-  setAdapter(adapter, { migrateData = true } = {}) {
+  async setAdapter(adapter, { migrateData = true } = {}) {
     this.adapter = adapter;
-    if (migrateData) this.persist();
+    if (migrateData) await this.persist();
   }
 
-  persist() {
+  /** 保存先が端末に残らない場合の警告文（問題なければ null） */
+  get storageWarning() {
+    return this.adapter.persistent === false
+      ? 'このブラウザではデータを保存できません。タブを閉じるとメモが失われます。'
+      : null;
+  }
+
+  async persist() {
     this.data.meta.updatedAt = new Date().toISOString();
     this.data.meta.appVersion = APP_VERSION;
     try {
-      this.adapter.save(this.data);
+      await this.adapter.save(this.data);
     } catch (err) {
       console.error('[fcc] 保存に失敗しました', err);
       this.emit({ type: 'error', message: '保存できませんでした。ブラウザの空き容量をご確認ください。' });
@@ -64,8 +73,8 @@ export class Store {
   /** 変更を保存し、インデックスを捨てて通知する */
   commit(event = { type: 'change' }) {
     this._index = null;
-    this.persist();
     this.emit(event);
+    this.persist();
   }
 
   /* ---------------------------------------------------------- accessors */
@@ -77,6 +86,13 @@ export class Store {
 
   childrenOf(noteId) {
     return this.data.notes.filter((n) => n.parentId === noteId);
+  }
+
+  /** メモから派生した追加メモを再帰的に数える（記憶の枝） */
+  descendantsOf(noteId, seen = new Set()) {
+    if (seen.has(noteId)) return [];
+    seen.add(noteId);
+    return this.childrenOf(noteId).flatMap((c) => [c, ...this.descendantsOf(c.id, seen)]);
   }
 
   rootOf(note) {
@@ -127,26 +143,55 @@ export class Store {
     return this.index.get(dateKey) || { reviews: [], created: [] };
   }
 
-  /** 期限切れ（今日より前の pending）をすべて集める */
-  overdueItems(base = todayKey()) {
+  /**
+   * 期限切れ（今日より前の pending）を古い順に集める。
+   * 同じメモが何回分もたまっている場合は、いちばん古い 1 件だけを出す。
+   * （1 件記録すれば残りは自動で組み直されるため、同じメモが並ぶのを防ぐ）
+   */
+  overdueItems(base = todayKey(), { perNote = true } = {}) {
     const items = [];
     this.data.notes.forEach((note) => {
       if (note.status === 'archived') return;
-      note.reviews.forEach((review) => {
-        if (isOverdue(review, base)) items.push({ note, review });
-      });
+      const overdue = note.reviews.filter((review) => isOverdue(review, base));
+      if (!overdue.length) return;
+      const picked = perNote ? [overdue[0]] : overdue;
+      picked.forEach((review) => items.push({ note, review }));
     });
     return items.sort((a, b) => (a.review.due < b.review.due ? -1 : 1));
   }
 
-  /** 指定日のタスク一覧（設定に応じて期限切れを今日へ繰り越す） */
+  /**
+   * 今日の復習キュー。
+   * 期限切れは設定の上限まで（少しずつ取り戻す）。予定日は元のまま保つ。
+   */
+  todayQueue(base = todayKey()) {
+    const limit = this.settings.overdueDailyLimit;
+    const overdueAll = this.settings.carryOverOverdue ? this.overdueItems(base) : [];
+    const overdue = limit > 0 ? overdueAll.slice(0, limit) : overdueAll;
+    // 同じメモが「期限切れ」と「今日」の両方に出ないようにする
+    const seen = new Set(overdue.map((i) => i.note.id));
+    const due = this.dayBucket(base).reviews
+      .filter((r) => r.review.status === 'pending' && !seen.has(r.note.id));
+    return {
+      overdue,
+      due,
+      waiting: Math.max(0, overdueAll.length - overdue.length),
+      overdueTotal: overdueAll.length,
+      items: [...overdue, ...due],
+    };
+  }
+
+  /** 指定日のタスク一覧（今日は期限切れを繰り越して先頭に置く） */
   tasksFor(dateKey) {
     const bucket = this.dayBucket(dateKey);
     const today = todayKey();
-    const carry = this.settings.carryOverOverdue && dateKey === today
-      ? this.overdueItems(today)
-      : [];
-    return { overdue: carry, reviews: bucket.reviews, created: bucket.created };
+    const queue = dateKey === today ? this.todayQueue(today) : null;
+    return {
+      overdue: queue ? queue.overdue : [],
+      waiting: queue ? queue.waiting : 0,
+      reviews: bucket.reviews,
+      created: bucket.created,
+    };
   }
 
   stats() {
@@ -154,12 +199,16 @@ export class Store {
     const notes = this.data.notes.filter((n) => n.status !== 'archived');
     const todayBucket = this.dayBucket(today);
     const pendingToday = todayBucket.reviews.filter((r) => r.review.status === 'pending').length;
-    const doneToday = this.data.notes.reduce((acc, note) => acc + note.reviews.filter(
-      (r) => r.status === 'done' && r.completedAt && r.completedAt.slice(0, 10) === today,
+    const doneToday = this.data.notes.reduce((acc, note) => acc + note.events.filter(
+      (e) => e.type === 'rate' && e.day === today,
     ).length, 0);
     const upcoming7 = Array.from({ length: 7 }, (_, i) => this.dayBucket(addDays(today, i))
       .reviews.filter((r) => r.review.status === 'pending').length)
       .reduce((a, b) => a + b, 0);
+    const ratings = { known: 0, vague: 0, forgot: 0 };
+    this.data.notes.forEach((n) => n.events.forEach((e) => {
+      if (e.type === 'rate' && ratings[e.rating] !== undefined) ratings[e.rating] += 1;
+    }));
     return {
       total: notes.length,
       active: notes.filter((n) => n.status === 'active').length,
@@ -168,6 +217,8 @@ export class Store {
       pendingToday,
       doneToday,
       upcoming7,
+      ratings,
+      reviewsDone: ratings.known + ratings.vague + ratings.forgot,
     };
   }
 
@@ -184,20 +235,23 @@ export class Store {
     const note = this.getNote(id);
     if (!note) return null;
     if (patch.title !== undefined) note.title = String(patch.title).trim();
+    if (patch.cue !== undefined) note.cue = String(patch.cue).trim();
     if (patch.body !== undefined) note.body = String(patch.body).trim();
     if (patch.tags !== undefined) note.tags = normalizeTags(patch.tags);
     if (patch.color !== undefined) note.color = patch.color || null;
 
-    const presetChanged = patch.presetId && patch.presetId !== note.schedule.presetId;
-    const intervalsChanged = patch.intervals
-      && sanitizeIntervals(patch.intervals).join(',') !== note.schedule.intervals.join(',');
-    if (presetChanged || intervalsChanged) {
-      const intervals = patch.presetId === 'custom'
-        ? sanitizeIntervals(patch.intervals || this.settings.customIntervals)
-        : resolveIntervals(patch.presetId || note.schedule.presetId, this.settings);
-      rewriteSchedule(note, patch.presetId || note.schedule.presetId, intervals, makeReviewId);
+    const presetId = patch.presetId || note.schedule.presetId;
+    const intervals = patch.intervals
+      ? sanitizeIntervals(patch.intervals)
+      : resolveIntervals(presetId, this.settings);
+    const changed = (patch.presetId && patch.presetId !== note.schedule.presetId)
+      || (patch.intervals && intervals.join(',') !== note.schedule.intervals.join(','));
+
+    if (changed) {
+      this.appendEvent(note, 'reschedule', { presetId, intervals }, { silent: true });
     }
     note.updatedAt = new Date().toISOString();
+    this.refresh(note);
     this.commit({ type: 'note:update', noteId: id });
     return note;
   }
@@ -209,9 +263,9 @@ export class Store {
       if (withChildren) this.childrenOf(noteId).forEach((c) => collect(c.id));
     };
     collect(id);
-    const removedNotes = this.data.notes.filter((n) => removed.includes(n.id));
+    const removedNotes = this.data.notes.filter((n) => removed.includes(n.id))
+      .map((n) => JSON.parse(JSON.stringify(n)));
     this.data.notes = this.data.notes.filter((n) => !removed.includes(n.id));
-    // 子を残す設定なら親リンクだけ外す
     if (!withChildren) this.data.notes.forEach((n) => { if (n.parentId === id) n.parentId = null; });
     this.commit({ type: 'note:delete', noteId: id });
     return removedNotes;
@@ -219,50 +273,90 @@ export class Store {
 
   /** deleteNote の取り消し用 */
   restoreNotes(notes) {
-    notes.map(normalizeNote).filter(Boolean).forEach((n) => {
+    notes.map((n) => normalizeNote(n, this.settings)).filter(Boolean).forEach((n) => {
       if (!this.getNote(n.id)) this.data.notes.push(n);
     });
     this.commit({ type: 'note:restore' });
   }
 
+  /* ------------------------------------------------- 復習（出来事の記録） */
+
+  /** メモに出来事を積み、スケジュールを組み直す */
+  appendEvent(note, type, payload = {}, { silent = false } = {}) {
+    const event = { id: makeEventId(), ...createEvent(type, payload) };
+    note.events.push(event);
+    note.updatedAt = event.at;
+    this.refresh(note);
+    if (!silent) this.commit({ type: `event:${type}`, noteId: note.id, eventId: event.id });
+    return event;
+  }
+
+  refresh(note) {
+    return refreshNote(note, { adaptive: this.settings.adaptive });
+  }
+
+  /** すべてのメモのスケジュールを再生し直す（設定変更時など） */
+  refreshAll() {
+    this.data.notes.forEach((n) => this.refresh(n));
+    this._index = null;
+  }
+
   rateReview(noteId, reviewId, rating) {
     const note = this.getNote(noteId);
-    if (!note) return null;
-    applyReviewResult(note, reviewId, rating, { adaptive: this.settings.adaptive }, makeReviewId);
-    this.commit({ type: 'review:rate', noteId, reviewId, rating });
+    const review = note?.reviews.find((r) => r.id === reviewId);
+    if (!note || !review) return null;
+    this.appendEvent(note, 'rate', { reviewKey: review.id, step: review.step, rating });
     return note;
   }
 
   skipReview(noteId, reviewId) {
     const note = this.getNote(noteId);
-    if (!note) return null;
-    skipReview(note, reviewId);
-    this.commit({ type: 'review:skip', noteId, reviewId });
-    return note;
-  }
-
-  undoReview(noteId, reviewId) {
-    const note = this.getNote(noteId);
-    if (!note) return null;
-    undoReview(note, reviewId);
-    sortReviews(note);
-    this.commit({ type: 'review:undo', noteId, reviewId });
+    const review = note?.reviews.find((r) => r.id === reviewId);
+    if (!note || !review) return null;
+    this.appendEvent(note, 'skip', { reviewKey: review.id, step: review.step });
     return note;
   }
 
   postponeReview(noteId, reviewId, days = 1) {
     const note = this.getNote(noteId);
-    if (!note) return null;
-    postponeReview(note, reviewId, days);
-    this.commit({ type: 'review:postpone', noteId, reviewId });
+    const review = note?.reviews.find((r) => r.id === reviewId);
+    if (!note || !review) return null;
+    this.appendEvent(note, 'postpone', {
+      reviewKey: review.id,
+      step: review.step,
+      due: addDays(todayKey(), Math.max(1, days)),
+    });
     return note;
   }
 
   restartNote(noteId) {
     const note = this.getNote(noteId);
     if (!note) return null;
-    restartSchedule(note, note.schedule.intervals, makeReviewId);
-    this.commit({ type: 'note:restart', noteId });
+    this.appendEvent(note, 'restart', {});
+    return note;
+  }
+
+  /** 直前の出来事を取り消せるか */
+  canUndo(noteId, eventId = null) {
+    const note = this.getNote(noteId);
+    if (!note || !note.events.length) return false;
+    const last = note.events[note.events.length - 1];
+    return eventId ? last.id === eventId : true;
+  }
+
+  /**
+   * 直前の出来事を取り消す。
+   * スケジュールは出来事から再生されるため、ease も未来の予定も記録前の状態に戻る。
+   */
+  undoLastEvent(noteId, eventId = null) {
+    const note = this.getNote(noteId);
+    if (!note || !note.events.length) return null;
+    const last = note.events[note.events.length - 1];
+    if (eventId && last.id !== eventId) return null;
+    note.events.pop();
+    note.updatedAt = new Date().toISOString();
+    this.refresh(note);
+    this.commit({ type: 'event:undo', noteId, eventId: last.id });
     return note;
   }
 
@@ -272,7 +366,7 @@ export class Store {
     if (archived) {
       note.status = 'archived';
     } else {
-      note.status = note.reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
+      this.refresh(note);
     }
     note.updatedAt = new Date().toISOString();
     this.commit({ type: 'note:archive', noteId });
@@ -281,6 +375,8 @@ export class Store {
 
   updateSettings(patch) {
     this.data.settings = normalizeSettings({ ...this.data.settings, ...patch });
+    // adaptive は全メモの予定に影響するため、再生し直す
+    if (patch.adaptive !== undefined) this.refreshAll();
     this.commit({ type: 'settings:update', patch });
     return this.data.settings;
   }
@@ -310,11 +406,11 @@ export class Store {
     return { imported: incoming.notes.length, skipped: 0 };
   }
 
-  clearAll() {
+  async clearAll() {
     const settings = { ...this.data.settings };
     this.data = createEmptyData();
     this.data.settings = settings;
-    this.adapter.clear();
+    await this.adapter.clear();
     this.commit({ type: 'data:clear' });
   }
 }
