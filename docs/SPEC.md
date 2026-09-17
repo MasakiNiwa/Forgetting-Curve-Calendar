@@ -71,7 +71,7 @@
     }
   ],
   "settings": { /* 5章 */ },
-  "meta": { "createdAt": "ISO8601", "updatedAt": "ISO8601", "appVersion": "0.5.0" }
+  "meta": { "createdAt": "ISO8601", "updatedAt": "ISO8601", "appVersion": "0.5.1" }
 }
 ```
 
@@ -277,6 +277,24 @@
 キーボードのどれからでも `editor.run('bullet')` のように同じ処理を呼ぶ。
 機能を足すときは `registerCommand()` で 1 つ増やすだけで、
 エディタ本体や保存処理は書き換えない。
+
+### ソフトキーボードへの追従
+
+スマホでキーボードが出ると、画面の下側が隠れる。縮むのは「実際に見えている領域
+(visualViewport)」で、`100dvh` などのレイアウト高さは変わらないため、
+そのままでは下端のバーがキーボードの裏に回る。
+
+- `ui/viewport.js` が visualViewport を監視し、CSS 変数へ流し込む
+  （`--fcc-vv-height` / `--fcc-vv-top` / `--fcc-keyboard`、`data-keyboard="open"`）
+- 編集画面は `position: fixed` + `height: var(--fcc-vv-height)` + `top: var(--fcc-vv-top)`
+  で、見えている領域にぴったり収まる
+- `interactive-widget=resizes-content`（viewport meta）で、対応ブラウザでは
+  レイアウト自体も縮める
+- キーボードが出ている間は下端の余白（ホームバー分）を詰める
+- 領域が縮んだら、入力中の行が隠れないようカーソル位置へ寄せ直す
+
+ショートカットバーは、狭い画面では文字を省いてアイコンだけにし、
+横スクロールなしで全部が収まるようにする（幅 520px 以上で文字も表示）。
 
 ### 決めごと
 

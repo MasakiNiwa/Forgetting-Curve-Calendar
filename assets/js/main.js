@@ -2,6 +2,7 @@
 import { Store } from './core/store.js';
 import { mountApp } from './ui/app.js';
 import { applyTheme } from './ui/theme.js';
+import { watchViewport } from './ui/viewport.js';
 import { APP_NAME, APP_VERSION, STORAGE_KEY } from './core/config.js';
 import { toast } from './ui/overlays.js';
 
@@ -29,6 +30,7 @@ async function boot() {
     }
   }, 60_000);
 
+  watchViewport();
   watchOtherTabs(store);
   registerServiceWorker();
 
