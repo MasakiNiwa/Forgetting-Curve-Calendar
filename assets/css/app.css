@@ -1081,3 +1081,154 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .milestone--next .milestone__icon { color: var(--fcc-on-surface-variant); }
 .session__extra { display: flex; justify-content: center; margin-top: 12px; }
+
+/* ==========================================================================
+   v0.5: 全画面のメモ編集画面
+   ========================================================================== */
+
+/* 編集中はアプリバーとナビを隠し、表示領域すべてを本文に使う */
+:root[data-mode="editor"] .appbar,
+:root[data-mode="editor"] .nav,
+:root[data-mode="editor"] .fab { display: none; }
+:root[data-mode="editor"] .app { grid-template-rows: auto auto 1fr; grid-template-areas: "banner" "main" "main"; }
+:root[data-mode="editor"] .app__main { padding: 0; overflow: hidden; }
+
+@media (min-width: 1000px) {
+  :root[data-mode="editor"] .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "banner" "main" "main";
+  }
+}
+
+.ed {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--fcc-surface);
+}
+
+.ed__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 6px 4px;
+  border-bottom: 1px solid var(--fcc-outline-variant);
+  background: var(--fcc-surface);
+  flex: none;
+}
+.ed__title {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font-size: 1rem;
+  font-weight: 650;
+  padding: 8px 6px;
+  color: inherit;
+}
+.ed__title:focus { outline: none; background: var(--fcc-surface-container); border-radius: var(--fcc-radius-s); }
+.ed__toolbar .icon-btn:disabled { opacity: .3; cursor: default; }
+
+.ed__banner, .ed__parent { margin: 8px 12px 0; flex: none; }
+.ed__parent {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-tertiary-container);
+  color: var(--fcc-on-tertiary-container);
+  font-size: .8rem;
+}
+.ed__error {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-error-container);
+  color: var(--fcc-on-error-container);
+  font-size: .8rem;
+  flex: none;
+}
+
+.ed__body-wrap { flex: 1; min-height: 0; display: flex; padding: 0 4px; }
+.ed__body {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  padding: 16px 12px 24px;
+  line-height: 1.9;
+  font-size: 16px;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ed__find {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--fcc-outline-variant);
+  flex: none;
+  overflow-x: auto;
+}
+.ed__find[hidden] { display: none; }
+.ed__find-input { min-width: 7em; flex: 1; padding: 8px 10px; }
+
+.ed__shortcuts {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--fcc-outline-variant);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: none;
+  background: var(--fcc-surface-container-low);
+}
+.ed__shortcuts::-webkit-scrollbar { display: none; }
+.ed__shortcut {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 64px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--fcc-radius-s);
+  background: transparent;
+  color: var(--fcc-on-surface-variant);
+  font-size: .66rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ed__shortcut:hover { background: var(--fcc-surface-container-high); }
+.ed__shortcut:active { background: var(--fcc-surface-container-highest); }
+.ed__shortcut-icon { display: flex; }
+
+.ed__status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px calc(6px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--fcc-outline-variant);
+  font-size: .7rem;
+  color: var(--fcc-on-surface-variant);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  background: var(--fcc-surface-container-low);
+}
+.ed__status-text[data-tone="error"] { color: var(--fcc-error); font-weight: 700; }
+.ed__status-text[data-tone="warn"] { color: var(--fcc-warning); font-weight: 700; }
+.ed__status-caret { display: none; }
+@media (min-width: 720px) { .ed__status-caret { display: inline; } }
+
+.ed-info .field { margin-bottom: 14px; }
+
+/* 広い画面では、本文の 1 行が長くなりすぎないようにする */
+@media (min-width: 900px) {
+  .ed__body { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
+  .ed__toolbar, .ed__status, .ed__shortcuts { padding-left: 16px; padding-right: 16px; }
+}

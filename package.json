@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/core.test.mjs",
+    "test": "node --test tests/core.test.mjs tests/editor.test.mjs",
     "serve": "python3 -m http.server 8000"
   },
   "repository": {

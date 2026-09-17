@@ -1,18 +1,52 @@
-/** ハッシュベースの簡易ルーター */
+/**
+ * ハッシュベースの簡易ルーター。
+ * `#/notes` のような固定ルートに加えて、`#/note/<id>?from=notes` のような
+ * パラメータ付きのルートも扱う。
+ */
 const listeners = new Set();
 
-export function currentRoute(routes, fallback) {
-  const raw = window.location.hash.replace(/^#\/?/, '').split('?')[0];
-  return routes.some((r) => r.id === raw) ? raw : fallback;
+/** 現在のハッシュを {segments, params} に分解する */
+export function parseHash() {
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  const [path, query] = raw.split('?');
+  return {
+    segments: path.split('/').filter(Boolean),
+    params: new URLSearchParams(query || ''),
+  };
 }
 
-export function navigate(routeId) {
-  const next = `#/${routeId}`;
+export function currentRoute(routes, fallback) {
+  const { segments } = parseHash();
+  const head = segments[0] || '';
+  return routes.some((r) => r.id === head) ? head : fallback;
+}
+
+/** `#/note/abc?from=notes` の形を組み立てる */
+export function buildPath(segments, params = {}) {
+  const path = [].concat(segments).filter(Boolean).join('/');
+  const query = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+  ).toString();
+  return `#/${path}${query ? `?${query}` : ''}`;
+}
+
+export function navigate(target, params) {
+  const next = typeof target === 'string' && target.startsWith('#')
+    ? target
+    : buildPath(target, params);
   if (window.location.hash === next) {
-    listeners.forEach((fn) => fn(routeId));
+    listeners.forEach((fn) => fn());
     return;
   }
   window.location.hash = next;
+}
+
+/** 履歴を増やさずに URL だけ差し替える（新規メモに id が付いたときなど） */
+export function replacePath(target, params) {
+  const next = typeof target === 'string' && target.startsWith('#')
+    ? target
+    : buildPath(target, params);
+  window.history.replaceState(null, '', next);
 }
 
 export function onRouteChange(fn) {
@@ -21,8 +55,7 @@ export function onRouteChange(fn) {
 }
 
 export function startRouter(handler) {
-  const emit = () => handler();
-  window.addEventListener('hashchange', emit);
+  window.addEventListener('hashchange', () => handler());
   listeners.add(() => handler());
-  emit();
+  handler();
 }

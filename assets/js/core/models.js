@@ -34,11 +34,25 @@ export const DEFAULT_SETTINGS = Object.freeze({
   defaultExportFormat: 'markdown',
 });
 
+/** 墓標（削除済みメモの id -> 削除時刻）。古すぎるものは捨てる。 */
+export function normalizeTombstones(raw, keepDays = 180) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  const limit = Date.now() - keepDays * 86400000;
+  Object.entries(raw).forEach(([id, at]) => {
+    if (typeof id !== 'string' || typeof at !== 'string') return;
+    const t = Date.parse(at);
+    if (Number.isFinite(t) && t >= limit) out[id] = at;
+  });
+  return out;
+}
+
 export function createEmptyData() {
   const now = new Date().toISOString();
   return {
     schemaVersion: SCHEMA_VERSION,
     notes: [],
+    deleted: {},
     settings: { ...DEFAULT_SETTINGS },
     meta: { createdAt: now, updatedAt: now, appVersion: APP_VERSION },
   };
@@ -71,6 +85,7 @@ export function createNote(input, settings) {
     anchorDate,
     createdAt: now,
     updatedAt: now,
+    contentUpdatedAt: now,   // 本文・タイトルなど「中身」を最後に直した時刻
     status: 'active',
     color: input.color || null,
     origin: { presetId, intervals, spread, seed },
@@ -175,9 +190,10 @@ function normalizeEvent(raw) {
   if (isValidKey(raw.dueWas)) event.dueWas = raw.dueWas;
   if (raw.type === 'postpone' && isValidKey(raw.due)) event.due = raw.due;
   if (raw.type === 'reschedule' || raw.type === 'restart') {
-    event.intervals = Array.isArray(raw.intervals) && raw.intervals.length === 0
-      ? []
-      : sanitizeIntervals(raw.intervals);
+    // 未指定（キーが無い）はそのまま未指定として残す。空配列は「予定なし」。
+    if (Array.isArray(raw.intervals)) {
+      event.intervals = raw.intervals.length ? sanitizeIntervals(raw.intervals) : [];
+    }
     if (raw.presetId) event.presetId = raw.presetId;
     if (raw.spread !== undefined) event.spread = Number(raw.spread) || 0;
     if (raw.seed !== undefined) event.seed = sanitizeSeed(raw.seed);
@@ -205,6 +221,10 @@ export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
     anchorDate,
     createdAt: raw.createdAt || now,
     updatedAt: raw.updatedAt || raw.createdAt || now,
+    contentUpdatedAt: raw.contentUpdatedAt || raw.updatedAt || raw.createdAt || now,
+    conflicts: Array.isArray(raw.conflicts)
+      ? raw.conflicts.filter((c) => c && typeof c.body === 'string').slice(0, 5)
+      : [],
     status: ['active', 'graduated', 'archived', 'inbox'].includes(raw.status) ? raw.status : 'active',
     color: raw.color || null,
     origin: {
@@ -247,6 +267,8 @@ export function normalizeData(raw) {
   return {
     schemaVersion: SCHEMA_VERSION,
     notes,
+    // 削除したメモの墓標。別タブの古い保存で復活しないようにする
+    deleted: normalizeTombstones(raw.deleted),
     settings,
     meta: {
       createdAt: raw.meta?.createdAt || base.meta.createdAt,

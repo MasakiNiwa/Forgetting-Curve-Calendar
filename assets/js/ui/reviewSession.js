@@ -9,7 +9,7 @@ import { h, append, button, iconButton, clear } from './dom.js';
 import { icon } from './icons.js';
 import { openDialog, toast } from './overlays.js';
 import { ratingButtons } from './components.js';
-import { openNoteEditor } from './editor.js';
+import { openQuickCapture } from './editor.js';
 import { RATINGS } from '../core/curve.js';
 import { recallCue } from '../core/models.js';
 import { formatRelative, formatSmart } from '../core/date.js';
@@ -99,7 +99,7 @@ export function startReviewSession(store, options = {}) {
           button('気づきを追記', {
             className: 'btn btn--text btn--sm',
             icon: icon('branch', { size: 16 }),
-            onClick: () => openNoteEditor(store, { parentId: note.id }),
+            onClick: () => openQuickCapture(store, { parentId: note.id }),
           })),
       ]);
     };

@@ -133,12 +133,13 @@ export function renderNotes(store) {
         store,
         note,
         subtitle: subtitleFor(note, next),
-        onOpen: (n, kind) => (kind === 'menu' ? openNoteMenu(store, n) : openNoteDetail(store, n.id)),
+        // 選んだら、そのまま全画面の編集画面へ入る
+        onOpen: (n, kind) => (kind === 'menu' ? openNoteMenu(store, n) : openNoteEditor(store, { noteId: n.id, returnTo: 'notes' })),
         actions: [
-          button('編集', {
+          button('詳細', {
             className: 'btn btn--text btn--sm',
-            icon: icon('edit', { size: 16 }),
-            onClick: (e) => { e.stopPropagation(); openNoteEditor(store, { noteId: note.id }); },
+            icon: icon('info', { size: 16 }),
+            onClick: (e) => { e.stopPropagation(); openNoteDetail(store, note.id); },
           }),
           button('追加メモ', {
             className: 'btn btn--text btn--sm',

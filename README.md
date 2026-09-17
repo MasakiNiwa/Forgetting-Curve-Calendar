@@ -11,7 +11,9 @@
 
 ## できること
 
-- ✍️ **気軽に書ける** — 本文が主役の入力画面。書きかけは自動保存され、閉じても消えない
+- ✍️ **全画面のテキストエディタ** — メモを選ぶとすぐ編集。ツールバー・ショートカットバー・ステータスバー付き
+- ↩️ **元に戻す / やり直す・検索置換** — 一括置換も 1 回で戻せる。日本語入力にも配慮
+- 💾 **自動保存** — 保存状態が常に見える。失敗しても本文は消えない
 - 📝 **メモを書くと復習日が自動で並ぶ** — 1 日後、3 日後、7 日後… と、数年先まで未来の日付に配置
 - 🧠 **「読む」ではなく「思い出す」** — 復習では手掛かりだけが出る。思い出してから内容を開いて答え合わせ
 - ▶️ **集中復習モード** — 今日の分をまとめて 1 件ずつ。終わると「また忘れる頃に会いましょう」
@@ -66,8 +68,9 @@ assets/
   js/
     core/  storage / migrations / models / curve / store / exporter … ドメイン（UI 非依存）
     ui/    app / editor / reviewSession / components …
+    editor/  history / textEditor … テキスト編集の中核（UI 非依存）
     ui/      … charts / reviewSession ほか
-    ui/views/  calendar / notes / stats / settings / help
+    ui/views/  calendar / noteEditor / notes / stats / settings / help
 docs/SPEC.md    仕様書
 tests/          コアロジックのテスト（node --test）
 ```

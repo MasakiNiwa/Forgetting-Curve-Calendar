@@ -4,7 +4,7 @@
  */
 export const APP_NAME = '忘却曲線カレンダー';
 export const APP_TAGLINE = 'そのメモ、もちろん忘れます';
-export const APP_VERSION = '0.4.0';
+export const APP_VERSION = '0.5.0';
 export const RELEASE_DATE = '2026-09-17';
 
 export const REPO_URL = 'https://github.com/MasakiNiwa/Forgetting-Curve-Calendar';
