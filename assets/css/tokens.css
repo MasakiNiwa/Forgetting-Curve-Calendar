@@ -27,6 +27,12 @@
   --fcc-warning: #8a5300;
   --fcc-warning-container: #ffddb3;
 
+  /* 想起結果の色。可読性検証（CVD 含む）を通した組み合わせ。
+     覚えていた / あいまい / 忘れた の順に隣り合わせても見分けられる。 */
+  --fcc-rating-known: #1b6b3c;
+  --fcc-rating-vague: #2f6ab5;
+  --fcc-rating-forgot: #b3261e;
+
   --fcc-success: #206c3f;
   --fcc-success-container: #a9f2bf;
 
@@ -102,6 +108,10 @@
 
   --fcc-warning: #ffb95c;
   --fcc-warning-container: #5c3d00;
+
+  --fcc-rating-known: #2f9d66;
+  --fcc-rating-vague: #5b93e0;
+  --fcc-rating-forgot: #e0574c;
 
   --fcc-success: #8dd5a4;
   --fcc-success-container: #0a5129;

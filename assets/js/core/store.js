@@ -7,9 +7,10 @@
  * そのため「取り消す」は最後の出来事を取り除くだけで、ease も未来の予定も正確に戻る。
  */
 import { APP_VERSION } from './config.js';
-import { addDays, diffDays, todayKey } from './date.js';
+import { addDays, diffDays, fromKey as fromKeyLocal, todayKey } from './date.js';
 import {
-  createEvent, isOverdue, nextReview, refreshNote, resolveIntervals, sanitizeIntervals,
+  baseIntervalsOf, createEvent, isOverdue, nextReview, refreshNote, resolveIntervals,
+  sanitizeIntervals, sanitizeSeed,
 } from './curve.js';
 import {
   createEmptyData, createNote, makeEventId, normalizeData, normalizeNote,
@@ -222,6 +223,80 @@ export class Store {
     };
   }
 
+  /* ------------------------------------------------------------ 集計 */
+
+  /** 日付 -> 想起結果の内訳。記録画面のヒートマップ用。 */
+  activityByDay(fromKey, toKey) {
+    const map = new Map();
+    this.data.notes.forEach((note) => note.events.forEach((ev) => {
+      if (ev.type !== 'rate' && ev.type !== 'skip') return;
+      if (ev.day < fromKey || ev.day > toKey) return;
+      const entry = map.get(ev.day) || { known: 0, vague: 0, forgot: 0, skipped: 0, total: 0 };
+      if (ev.type === 'skip') entry.skipped += 1;
+      else entry[ev.rating] = (entry[ev.rating] || 0) + 1;
+      entry.total += 1;
+      map.set(ev.day, entry);
+    }));
+    return map;
+  }
+
+  /** 何日続けて思い出しているか（今日まだでも、昨日まで続いていれば継続とみなす） */
+  streakDays(base = todayKey()) {
+    const days = new Set();
+    this.data.notes.forEach((note) => note.events.forEach((ev) => {
+      if (ev.type === 'rate') days.add(ev.day);
+    }));
+    if (!days.size) return 0;
+    let cursor = days.has(base) ? base : addDays(base, -1);
+    if (!days.has(cursor)) return 0;
+    let count = 0;
+    while (days.has(cursor)) {
+      count += 1;
+      cursor = addDays(cursor, -1);
+    }
+    return count;
+  }
+
+  /** これから先の月ごとの復習件数。負荷が散っているかを見る。 */
+  upcomingMonths(months = 12, base = todayKey()) {
+    const start = new Date(fromKeyLocal(base).getFullYear(), fromKeyLocal(base).getMonth(), 1);
+    const buckets = Array.from({ length: months }, (_, i) => {
+      const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+      return {
+        year: d.getFullYear(),
+        month: d.getMonth(),
+        prefix: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+        count: 0,
+      };
+    });
+    const byPrefix = new Map(buckets.map((b) => [b.prefix, b]));
+    this.data.notes.forEach((note) => {
+      if (note.status === 'archived') return;
+      note.reviews.forEach((r) => {
+        if (r.status !== 'pending' || r.due < base) return;
+        const bucket = byPrefix.get(r.due.slice(0, 7));
+        if (bucket) bucket.count += 1;
+      });
+    });
+    return buckets;
+  }
+
+  /** タグごとの状況 */
+  tagStats() {
+    const map = new Map();
+    this.data.notes.forEach((note) => {
+      if (note.status === 'archived') return;
+      note.tags.forEach((tag) => {
+        const entry = map.get(tag) || { tag, notes: 0, reviews: 0, graduated: 0 };
+        entry.notes += 1;
+        entry.reviews += note.events.filter((e) => e.type === 'rate').length;
+        if (note.status === 'graduated') entry.graduated += 1;
+        map.set(tag, entry);
+      });
+    });
+    return [...map.values()].sort((a, b) => b.notes - a.notes || a.tag.localeCompare(b.tag));
+  }
+
   /* ---------------------------------------------------------- mutations */
 
   addNote(input) {
@@ -240,15 +315,24 @@ export class Store {
     if (patch.tags !== undefined) note.tags = normalizeTags(patch.tags);
     if (patch.color !== undefined) note.color = patch.color || null;
 
+    // 曲線に関わる変更（プリセット・間隔・分散・シード）は reschedule として記録する
     const presetId = patch.presetId || note.schedule.presetId;
+    const baseIntervals = baseIntervalsOf(note);
     const intervals = patch.intervals
       ? sanitizeIntervals(patch.intervals)
-      : resolveIntervals(presetId, this.settings);
+      : (patch.presetId && patch.presetId !== note.schedule.presetId
+        ? resolveIntervals(presetId, this.settings)
+        : baseIntervals);
+    const seed = patch.seed !== undefined ? sanitizeSeed(patch.seed) : note.schedule.seed;
+    const spread = patch.spread !== undefined ? Number(patch.spread) || 0 : note.schedule.spread;
+
     const changed = (patch.presetId && patch.presetId !== note.schedule.presetId)
-      || (patch.intervals && intervals.join(',') !== note.schedule.intervals.join(','));
+      || intervals.join(',') !== baseIntervals.join(',')
+      || seed !== note.schedule.seed
+      || spread !== note.schedule.spread;
 
     if (changed) {
-      this.appendEvent(note, 'reschedule', { presetId, intervals }, { silent: true });
+      this.appendEvent(note, 'reschedule', { presetId, intervals, seed, spread }, { silent: true });
     }
     note.updatedAt = new Date().toISOString();
     this.refresh(note);

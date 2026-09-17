@@ -5,7 +5,7 @@
  * SCHEMA_VERSION を上げる。
  */
 import { SCHEMA_VERSION } from './config.js';
-import { localDayOf } from './curve.js';
+import { getSpread, localDayOf, seedFromString } from './curve.js';
 
 /**
  * v1 → v2
@@ -48,8 +48,36 @@ function v1ToV2(data) {
   return { ...data, schemaVersion: 2, notes };
 }
 
+/**
+ * v2 → v3
+ * 復習日の分散（メモごとのシード）を導入した。
+ * 既存メモには id から安定したシードを割り当て、設定の分散の強さを適用する。
+ * これにより、同じ日に書いたメモの遠い未来の復習日が散らばるようになる。
+ */
+function v2ToV3(data) {
+  const ratio = getSpread(data.settings?.spreadId).ratio;
+  const notes = (Array.isArray(data.notes) ? data.notes : []).map((note) => {
+    if (!note || typeof note !== 'object') return note;
+    return {
+      ...note,
+      origin: {
+        ...(note.origin || {}),
+        spread: note.origin?.spread !== undefined ? note.origin.spread : ratio,
+        seed: note.origin?.seed !== undefined ? note.origin.seed : seedFromString(note.id || ''),
+      },
+    };
+  });
+  return {
+    ...data,
+    schemaVersion: 3,
+    notes,
+    settings: { ...(data.settings || {}), spreadId: data.settings?.spreadId || 'normal' },
+  };
+}
+
 const MIGRATIONS = {
   1: v1ToV2,
+  2: v2ToV3,
 };
 
 export function migrate(raw) {

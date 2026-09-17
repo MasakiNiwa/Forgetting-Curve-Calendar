@@ -198,7 +198,9 @@ export function reviewTimeline(store, note) {
 
 /**
  * 忘却曲線のプレビュー（SVG）。
- * 年単位まで伸びる曲線を 1 枚で見せるため、横軸は対数目盛にしている。
+ *
+ * 横軸は平方根目盛。等間隔（線形）だと最初の数日が潰れ、対数だと
+ * 「間隔が広がっていく」ことが伝わらないため、その中間を取っている。
  */
 export function curvePreview(intervals, ease = 2.5) {
   const list = sanitizeIntervals(intervals);
@@ -207,7 +209,7 @@ export function curvePreview(intervals, ease = 2.5) {
   const H = 130;
   const PAD = { l: 8, r: 8, t: 10, b: 22 };
   const maxT = series[series.length - 1]?.t || 1;
-  const scale = (t) => Math.log1p(Math.max(0, t)) / Math.log1p(maxT);
+  const scale = (t) => Math.sqrt(Math.max(0, t) / maxT);
   const x = (t) => PAD.l + scale(t) * (W - PAD.l - PAD.r);
   const y = (r) => PAD.t + (1 - r) * (H - PAD.t - PAD.b);
 
@@ -232,6 +234,40 @@ export function curvePreview(intervals, ease = 2.5) {
       <line class="curve-axis" x1="${PAD.l}" y1="${y(0)}" x2="${W - PAD.r}" y2="${y(0)}"/>
       ${marks}${labels}
     </svg>`);
+}
+
+/**
+ * 記憶の枝。
+ * メモから生まれた追加メモを、親子関係のまま表示する。
+ * 「昔書いたことを思い出した結果、新しい考えが生まれた」流れを見えるようにする。
+ */
+export function branchTree(store, rootNote, { currentId, onOpen } = {}) {
+  const wrap = h('div', { class: 'branch' });
+
+  const walk = (note, depth) => {
+    const children = store.childrenOf(note.id);
+    const next = note.reviews.find((r) => r.status === 'pending');
+    wrap.appendChild(h('button', {
+      type: 'button',
+      class: `branch__item ${note.id === currentId ? 'branch__item--current' : ''}`,
+      style: { paddingLeft: `${depth * 18}px` },
+      onClick: () => onOpen?.(note),
+    },
+    h('span', { class: 'branch__mark', html: icon(depth === 0 ? 'note' : 'branch', { size: 16 }) }),
+    h('span', { class: 'branch__text' },
+      h('span', { class: 'branch__title' }, displayTitle(note)),
+      h('span', { class: 'branch__meta' },
+        `${formatMedium(note.anchorDate)}`,
+        next
+          ? (reviewState(next) === 'overdue' ? '・思い出し待ち' : `・次 ${formatRelative(next.due)}`)
+          : '・定着',
+        children.length ? `・気づき ${children.length}` : '')),
+    ));
+    children.forEach((c) => walk(c, depth + 1));
+  };
+
+  walk(rootNote, 0);
+  return wrap;
 }
 
 /** 文字列マークアップから SVG 要素を生成する（名前空間対応） */
