@@ -93,12 +93,16 @@ export function normalizeTags(tags) {
   return [...new Set(cleaned)];
 }
 
+/** タイトルとして表示する最大文字数（本文の 1 行目から作るとき） */
+export const TITLE_MAX = 44;
+
 /** メモの表示用タイトル（未設定なら本文の 1 行目） */
 export function displayTitle(note) {
   if (note.title) return note.title;
   const firstLine = (note.body || '').split('\n').find((l) => l.trim());
   if (!firstLine) return '(無題のメモ)';
-  return firstLine.trim().slice(0, 44);
+  const trimmed = firstLine.trim();
+  return trimmed.length > TITLE_MAX ? `${trimmed.slice(0, TITLE_MAX)}…` : trimmed;
 }
 
 /**
@@ -109,9 +113,16 @@ export function recallCue(note) {
   return note.cue?.trim() || displayTitle(note);
 }
 
-/** 手掛かりを見ただけでは答えが分からない状態か（隠す意味があるか） */
+/**
+ * 手掛かりを見ただけでは中身が分からない状態か（隠す意味があるか）。
+ * 一行しかない短いメモは、隠しても思い出す余地がないので隠さない。
+ */
 export function hasHiddenContent(note) {
-  return Boolean(note.cue?.trim() ? note.body.trim() : bodyPreview(note));
+  const body = (note.body || '').trim();
+  if (!body) return false;
+  if (note.cue?.trim() || note.title?.trim()) return true;
+  const lines = body.split('\n').filter((l) => l.trim());
+  return lines.length > 1 || lines[0].trim().length > TITLE_MAX;
 }
 
 /**
@@ -161,10 +172,13 @@ function normalizeEvent(raw) {
   if (raw.reviewKey) event.reviewKey = String(raw.reviewKey);
   if (Number.isFinite(raw.step)) event.step = Math.max(0, Math.round(raw.step));
   if (raw.type === 'rate') event.rating = ['known', 'vague', 'forgot'].includes(raw.rating) ? raw.rating : 'known';
+  if (isValidKey(raw.dueWas)) event.dueWas = raw.dueWas;
   if (raw.type === 'postpone' && isValidKey(raw.due)) event.due = raw.due;
-  if (raw.type === 'reschedule') {
-    event.intervals = sanitizeIntervals(raw.intervals);
-    event.presetId = raw.presetId || DEFAULT_PRESET_ID;
+  if (raw.type === 'reschedule' || raw.type === 'restart') {
+    event.intervals = Array.isArray(raw.intervals) && raw.intervals.length === 0
+      ? []
+      : sanitizeIntervals(raw.intervals);
+    if (raw.presetId) event.presetId = raw.presetId;
     if (raw.spread !== undefined) event.spread = Number(raw.spread) || 0;
     if (raw.seed !== undefined) event.seed = sanitizeSeed(raw.seed);
   }
@@ -175,7 +189,11 @@ export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
   if (!raw || typeof raw !== 'object') return null;
   const now = new Date().toISOString();
   const anchorDate = isValidKey(raw.anchorDate) ? raw.anchorDate : todayKey();
-  const originIntervals = sanitizeIntervals(raw.origin?.intervals || raw.schedule?.intervals);
+  const rawIntervals = raw.origin?.intervals ?? raw.schedule?.intervals;
+  // 「あとで決める」で保存したメモは間隔なし。それ以外は正規化する
+  const originIntervals = Array.isArray(rawIntervals) && rawIntervals.length === 0
+    ? []
+    : sanitizeIntervals(rawIntervals);
 
   const note = {
     id: typeof raw.id === 'string' && raw.id ? raw.id : makeNoteId(),
@@ -187,7 +205,7 @@ export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
     anchorDate,
     createdAt: raw.createdAt || now,
     updatedAt: raw.updatedAt || raw.createdAt || now,
-    status: ['active', 'graduated', 'archived'].includes(raw.status) ? raw.status : 'active',
+    status: ['active', 'graduated', 'archived', 'inbox'].includes(raw.status) ? raw.status : 'active',
     color: raw.color || null,
     origin: {
       presetId: raw.origin?.presetId || raw.schedule?.presetId || DEFAULT_PRESET_ID,
@@ -232,8 +250,9 @@ export function normalizeData(raw) {
     settings,
     meta: {
       createdAt: raw.meta?.createdAt || base.meta.createdAt,
-      updatedAt: new Date().toISOString(),
+      updatedAt: raw.meta?.updatedAt || new Date().toISOString(),
       appVersion: APP_VERSION,
+      saveToken: raw.meta?.saveToken ?? null,
     },
   };
 }

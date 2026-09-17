@@ -142,13 +142,25 @@ function todayCard(store) {
   const doneToday = store.stats().doneToday;
 
   if (!count) {
+    // 「今日はここまで」を守る。追加は本人が望んだときだけ。
+    const extra = queue.waiting > 0;
     return h('section', { class: 'today-card today-card--clear' },
       h('div', { class: 'today-card__icon', html: icon(doneToday ? 'check' : 'sparkle', { size: 22 }) }),
       h('div', { style: { flex: '1', minWidth: '0' } },
         h('div', { class: 'today-card__title' },
-          doneToday ? '今日の復習は終わりました' : '今日の復習はありません'),
+          doneToday ? '今日の分は終わりました' : '今日の復習はありません'),
         h('div', { class: 'today-card__desc' },
-          doneToday ? `${doneToday} 件を思い出しました。また忘れる頃に。` : 'メモを書くと、忘れた頃に戻ってきます。')));
+          doneToday
+            ? `${doneToday} 件を思い出しました。また忘れる頃に。`
+            : 'メモを書くと、忘れた頃に戻ってきます。'),
+        extra ? h('div', { class: 'today-card__desc' },
+          `思い出し待ちが ${queue.waiting} 件ありますが、続きは明日で大丈夫です。`) : null),
+      extra ? button('もう少しやる', {
+        className: 'btn btn--text btn--sm',
+        onClick: () => startReviewSession(store, {
+          items: store.todayQueue(today, { extra: true }).items,
+        }),
+      }) : null);
   }
 
   return h('section', { class: 'today-card' },
@@ -162,7 +174,7 @@ function todayCard(store) {
           : null,
         doneToday ? h('span', { class: 'today-card__chip' }, `完了 ${doneToday}`) : null),
       queue.waiting
-        ? h('div', { class: 'today-card__desc' }, `ほかに ${queue.waiting} 件が順番待ちです。今日はこの ${count} 件だけで大丈夫。`)
+        ? h('div', { class: 'today-card__desc' }, `ほかに ${queue.waiting} 件は順番待ちです。今日はこの ${count} 件だけで大丈夫。`)
         : h('div', { class: 'today-card__desc' }, '思い出してから答え合わせをしましょう。')),
     button('思い出し始める', {
       className: 'btn today-card__cta',
@@ -187,12 +199,16 @@ function selectDay(store, key) {
 
 /** モバイル: 日付をタップしたらボトムシートでその日の内容を出す */
 function openDaySheet(store, key) {
-  const sheet = openSheet({ title: formatLong(key), content: renderDayPanel(store, key, { inSheet: true }) });
-  const unsubscribe = store.subscribe(() => {
+  let unsubscribe = () => {};
+  const sheet = openSheet({
+    title: formatLong(key),
+    content: renderDayPanel(store, key, { inSheet: true }),
+    // 背景のタップや Esc で閉じたときも、必ず購読を解除する
+    onClose: () => unsubscribe(),
+  });
+  unsubscribe = store.subscribe(() => {
     clear(sheet.body).appendChild(renderDayPanel(store, key, { inSheet: true }));
   });
-  const close = sheet.close;
-  sheet.close = () => { unsubscribe(); close(); };
   return sheet;
 }
 
@@ -235,7 +251,7 @@ function renderDayPanel(store, dateKey, { inSheet = false } = {}) {
 
   section('clock', '思い出し待ち', overdue,
     ({ note, review }) => reviewCard({ store, note, review, onOpen: open }),
-    waiting ? `ほかに ${waiting} 件が順番待ちです。毎日少しずつ取り戻せます。` : null);
+    waiting ? `ほかに ${waiting} 件は順番待ちです。今日の分を終えたら、続きは明日で大丈夫です。` : null);
   section('target', '思い出し直すメモ', pending, ({ note, review }) => reviewCard({ store, note, review, onOpen: open }));
   section('check', '終わった復習', finished, ({ note, review }) => reviewCard({ store, note, review, onOpen: open }));
   section('edit', 'この日に書いたメモ', created, (note) => noteCard({ store, note, onOpen: open, subtitle: 'この日に作成' }));

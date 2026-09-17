@@ -19,12 +19,25 @@ import {
 import { migrate } from './migrations.js';
 import { createDefaultAdapter } from './storage.js';
 
+/** 保存ごとの固有の印。どのタブが書いた内容かを見分けるために使う。 */
+function makeSaveToken() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export class Store {
   constructor(adapter = createDefaultAdapter()) {
     this.adapter = adapter;
     this.data = createEmptyData();
     this.listeners = new Set();
     this._index = null;
+    /**
+     * 最後に保存／読み込みできた内容の印。
+     * 時刻だけだと同じミリ秒の保存を取りこぼすため、保存ごとの固有トークンで見る。
+     */
+    this.syncedToken = null;
+    /** 直近の保存でエラーが出たか */
+    this.lastSaveError = null;
+    this._saving = null;
   }
 
   /* ---------------------------------------------------------- lifecycle */
@@ -32,8 +45,50 @@ export class Store {
   async load() {
     const raw = await this.adapter.load();
     this.data = raw ? normalizeData(migrate(raw)) : createEmptyData();
+    this.syncedToken = raw?.meta?.saveToken ?? null;
     this._index = null;
     return this.data;
+  }
+
+  /**
+   * 別のタブが保存した内容を取り込む。
+   * 同じ id のメモは「更新が新しい方」を残し、片方にしかないメモは両方残す。
+   * どちらのタブで書いたメモも失わないことを優先する。
+   */
+  async reconcile() {
+    const raw = await this.adapter.load();
+    if (!raw) return { changed: false, added: 0, updated: 0 };
+    const token = raw?.meta?.saveToken ?? null;
+    if (token !== null && token === this.syncedToken) return { changed: false, added: 0, updated: 0 };
+    const incoming = normalizeData(migrate(raw));
+
+    const mine = new Map(this.data.notes.map((n) => [n.id, n]));
+    let added = 0;
+    let updated = 0;
+    incoming.notes.forEach((theirs) => {
+      const ours = mine.get(theirs.id);
+      if (!ours) {
+        mine.set(theirs.id, theirs);
+        added += 1;
+        return;
+      }
+      // 出来事の数が多い方／更新が新しい方を採用する
+      const theirsNewer = theirs.events.length > ours.events.length
+        || (theirs.events.length === ours.events.length && theirs.updatedAt > ours.updatedAt);
+      if (theirsNewer) {
+        mine.set(theirs.id, theirs);
+        updated += 1;
+      }
+    });
+
+    const changed = added > 0 || updated > 0;
+    if (changed) {
+      this.data.notes = [...mine.values()];
+      this._index = null;
+    }
+    this.syncedToken = token;
+    if (changed) this.emit({ type: 'data:reconciled', added, updated });
+    return { changed, added, updated };
   }
 
   /** アダプタを差し替える（将来の同期実装用） */
@@ -49,15 +104,47 @@ export class Store {
       : null;
   }
 
+  /**
+   * 保存する。結果を返すので、呼び出し側は成功を待ってから画面を閉じられる。
+   * 別タブが先に書いていた場合は、上書きせず先に取り込んでから保存する。
+   */
   async persist() {
-    this.data.meta.updatedAt = new Date().toISOString();
-    this.data.meta.appVersion = APP_VERSION;
-    try {
-      await this.adapter.save(this.data);
-    } catch (err) {
-      console.error('[fcc] 保存に失敗しました', err);
-      this.emit({ type: 'error', message: '保存できませんでした。ブラウザの空き容量をご確認ください。' });
-    }
+    this._saving = (async () => {
+      try {
+        const stored = await this.adapter.load();
+        const storedToken = stored?.meta?.saveToken ?? null;
+        if (stored && storedToken !== this.syncedToken) {
+          // 別のタブが先に保存している。上書きせず、取り込んでから書く
+          await this.reconcile();
+        }
+        const token = makeSaveToken();
+        this.data.meta.updatedAt = new Date().toISOString();
+        this.data.meta.appVersion = APP_VERSION;
+        this.data.meta.saveToken = token;
+        await this.adapter.save(this.data);
+        this.syncedToken = token;
+        if (this.lastSaveError) {
+          this.lastSaveError = null;
+          this.emit({ type: 'save:recovered' });
+        }
+        return { ok: true };
+      } catch (err) {
+        console.error('[fcc] 保存に失敗しました', err);
+        this.lastSaveError = err;
+        this.emit({
+          type: 'error',
+          message: '保存できませんでした。ブラウザの空き容量や、プライベートモードの設定をご確認ください。',
+        });
+        return { ok: false, error: err };
+      }
+    })();
+    return this._saving;
+  }
+
+  /** 進行中の保存を待ち、結果を返す */
+  async flush() {
+    const result = await (this._saving || this.persist());
+    return result;
   }
 
   /* ---------------------------------------------------------- pub / sub */
@@ -163,35 +250,65 @@ export class Store {
 
   /**
    * 今日の復習キュー。
-   * 期限切れは設定の上限まで（少しずつ取り戻す）。予定日は元のまま保つ。
+   *
+   * 期限切れ（思い出し待ち）は 1 日あたりの上限まで。
+   * 上限は「今日すでに取り戻した数」を差し引いて数えるので、
+   * こなしても次が補充されない＝「今日はここまで」が守られる。
+   * `extra` を true にすると、本人が望んだときだけ追加分を出す。
    */
-  todayQueue(base = todayKey()) {
+  todayQueue(base = todayKey(), { extra = false } = {}) {
     const limit = this.settings.overdueDailyLimit;
     const overdueAll = this.settings.carryOverOverdue ? this.overdueItems(base) : [];
-    const overdue = limit > 0 ? overdueAll.slice(0, limit) : overdueAll;
+    const doneOverdueToday = this.overdueClearedToday(base);
+    const room = limit > 0 ? Math.max(0, limit - doneOverdueToday) : overdueAll.length;
+    const overdue = extra ? overdueAll : overdueAll.slice(0, room);
+
     // 同じメモが「期限切れ」と「今日」の両方に出ないようにする
     const seen = new Set(overdue.map((i) => i.note.id));
     const due = this.dayBucket(base).reviews
       .filter((r) => r.review.status === 'pending' && !seen.has(r.note.id));
+
     return {
       overdue,
       due,
       waiting: Math.max(0, overdueAll.length - overdue.length),
       overdueTotal: overdueAll.length,
+      limit,
+      doneOverdueToday,
       items: [...overdue, ...due],
     };
   }
 
-  /** 指定日のタスク一覧（今日は期限切れを繰り越して先頭に置く） */
+  /** 今日、予定日を過ぎていた復習をいくつ取り戻したか */
+  overdueClearedToday(base = todayKey()) {
+    let count = 0;
+    this.data.notes.forEach((note) => note.events.forEach((ev) => {
+      if ((ev.type === 'rate' || ev.type === 'skip') && ev.day === base && ev.dueWas && ev.dueWas < base) {
+        count += 1;
+      }
+    }));
+    return count;
+  }
+
+  /**
+   * 指定日のタスク一覧。
+   * 今日の分は todayQueue と必ず同じ内容にする（件数・まとめて復習とずれないように）。
+   */
   tasksFor(dateKey) {
     const bucket = this.dayBucket(dateKey);
     const today = todayKey();
-    const queue = dateKey === today ? this.todayQueue(today) : null;
+    if (dateKey !== today) {
+      return { overdue: [], waiting: 0, reviews: bucket.reviews, created: bucket.created };
+    }
+    const queue = this.todayQueue(today);
+    const queued = new Set(queue.due.map((i) => i.review.id));
+    const rest = bucket.reviews.filter((r) => r.review.status !== 'pending' || queued.has(r.review.id));
     return {
-      overdue: queue ? queue.overdue : [],
-      waiting: queue ? queue.waiting : 0,
-      reviews: bucket.reviews,
+      overdue: queue.overdue,
+      waiting: queue.waiting,
+      reviews: rest,
       created: bucket.created,
+      queue,
     };
   }
 
@@ -240,12 +357,24 @@ export class Store {
     return map;
   }
 
-  /** 何日続けて思い出しているか（今日まだでも、昨日まで続いていれば継続とみなす） */
-  streakDays(base = todayKey()) {
+  /**
+   * このアプリに触れた日（書いた日・思い出した日）の集合。
+   * 「復習が無い日に連続記録が切れる」のを避けるため、書いた日も数える。
+   */
+  touchedDays() {
     const days = new Set();
-    this.data.notes.forEach((note) => note.events.forEach((ev) => {
-      if (ev.type === 'rate') days.add(ev.day);
-    }));
+    this.data.notes.forEach((note) => {
+      days.add(note.anchorDate);
+      note.events.forEach((ev) => {
+        if (ev.type === 'rate' || ev.type === 'skip') days.add(ev.day);
+      });
+    });
+    return days;
+  }
+
+  /** 何日続けて触れているか（今日まだでも、昨日まで続いていれば継続とみなす） */
+  streakDays(base = todayKey()) {
+    const days = this.touchedDays();
     if (!days.size) return 0;
     let cursor = days.has(base) ? base : addDays(base, -1);
     if (!days.has(cursor)) return 0;
@@ -281,6 +410,55 @@ export class Store {
     return buckets;
   }
 
+  /** 直近 n 日で書いたメモ・生まれた気づき */
+  recentActivity(days = 7, base = todayKey()) {
+    const from = addDays(base, -(days - 1));
+    const written = this.data.notes.filter((n) => n.anchorDate >= from && n.anchorDate <= base);
+    return {
+      written: written.length,
+      insights: written.filter((n) => n.parentId).length,
+      reviewed: this.data.notes.reduce((acc, n) => acc + n.events.filter(
+        (e) => e.type === 'rate' && e.day >= from && e.day <= base,
+      ).length, 0),
+      notes: written,
+    };
+  }
+
+  /**
+   * 節目。数字を追いかけさせるのではなく、
+   * 「書けた」「戻ってこられた」「新しい気づきが生まれた」を拾う。
+   */
+  milestones(base = todayKey()) {
+    const notes = this.data.notes;
+    const rates = notes.flatMap((n) => n.events.filter((e) => e.type === 'rate'));
+    const children = notes.filter((n) => n.parentId);
+    const lateInsight = children.some((c) => {
+      const parent = this.getNote(c.parentId);
+      return parent && diffDays(parent.anchorDate, c.anchorDate) >= 30;
+    });
+    const graduated = notes.filter((n) => n.status === 'graduated').length;
+    const streak = this.streakDays(base);
+    const touched = this.touchedDays().size;
+
+    const defs = [
+      { id: 'first-note', label: '最初のメモを書いた', done: notes.length >= 1, icon: 'edit' },
+      { id: 'first-recall', label: '初めての再会', desc: '書いたメモと、後日また出会えました', done: rates.length >= 1, icon: 'sparkle' },
+      { id: 'recall-3', label: '3回 思い出した', done: rates.length >= 3, icon: 'target' },
+      { id: 'first-insight', label: '追加メモが生まれた', desc: '読み返して、新しい気づきを足せました', done: children.length >= 1, icon: 'branch' },
+      { id: 'notes-10', label: 'メモが10件たまった', done: notes.length >= 10, icon: 'notes' },
+      { id: 'recall-25', label: '25回 思い出した', done: rates.length >= 25, icon: 'target' },
+      { id: 'touched-7', label: '7日 このアプリに触れた', done: touched >= 7, icon: 'calendar' },
+      { id: 'late-insight', label: '1ヶ月前のメモに気づきを足した', done: lateInsight, icon: 'layers' },
+      { id: 'streak-7', label: '7日続けて触れた', done: streak >= 7, icon: 'flag' },
+      { id: 'first-graduate', label: '初めて定着した', done: graduated >= 1, icon: 'graduate' },
+      { id: 'recall-100', label: '100回 思い出した', done: rates.length >= 100, icon: 'target' },
+    ];
+    return {
+      achieved: defs.filter((d) => d.done),
+      next: defs.find((d) => !d.done) || null,
+    };
+  }
+
   /** タグごとの状況 */
   tagStats() {
     const map = new Map();
@@ -306,9 +484,17 @@ export class Store {
     return note;
   }
 
+  /** 復習の記録がまだ無い（起点日を動かしても履歴が壊れない）か */
+  canChangeAnchor(note) {
+    return !note.events.some((e) => e.type === 'rate' || e.type === 'skip');
+  }
+
   updateNote(id, patch) {
     const note = this.getNote(id);
     if (!note) return null;
+    if (patch.anchorDate && patch.anchorDate !== note.anchorDate && this.canChangeAnchor(note)) {
+      note.anchorDate = patch.anchorDate;
+    }
     if (patch.title !== undefined) note.title = String(patch.title).trim();
     if (patch.cue !== undefined) note.cue = String(patch.cue).trim();
     if (patch.body !== undefined) note.body = String(patch.body).trim();
@@ -389,7 +575,9 @@ export class Store {
     const note = this.getNote(noteId);
     const review = note?.reviews.find((r) => r.id === reviewId);
     if (!note || !review) return null;
-    this.appendEvent(note, 'rate', { reviewKey: review.id, step: review.step, rating });
+    this.appendEvent(note, 'rate', {
+      reviewKey: review.id, step: review.step, rating, dueWas: review.due,
+    });
     return note;
   }
 
@@ -397,7 +585,7 @@ export class Store {
     const note = this.getNote(noteId);
     const review = note?.reviews.find((r) => r.id === reviewId);
     if (!note || !review) return null;
-    this.appendEvent(note, 'skip', { reviewKey: review.id, step: review.step });
+    this.appendEvent(note, 'skip', { reviewKey: review.id, step: review.step, dueWas: review.due });
     return note;
   }
 
@@ -413,10 +601,23 @@ export class Store {
     return note;
   }
 
-  restartNote(noteId) {
+  /**
+   * 今日を起点に復習を組み直す。
+   * 「あとで決める」で保存したメモに予定を付けるときにも使う。
+   */
+  restartNote(noteId, { presetId, intervals } = {}) {
     const note = this.getNote(noteId);
     if (!note) return null;
-    this.appendEvent(note, 'restart', {});
+    const payload = {};
+    if (presetId) {
+      payload.presetId = presetId;
+      payload.intervals = intervals || resolveIntervals(presetId, this.settings);
+    } else if (!note.schedule.intervals.length) {
+      // 予定がまだ無いメモは、設定の既定プリセットで始める
+      payload.presetId = this.settings.presetId;
+      payload.intervals = resolveIntervals(this.settings.presetId, this.settings);
+    }
+    this.appendEvent(note, 'restart', payload);
     return note;
   }
 
@@ -450,6 +651,8 @@ export class Store {
     if (archived) {
       note.status = 'archived';
     } else {
+      // 先にアーカイブを外してから、予定にもとづいて状態を計算し直す
+      note.status = 'active';
       this.refresh(note);
     }
     note.updatedAt = new Date().toISOString();

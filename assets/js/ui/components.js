@@ -71,9 +71,14 @@ export function reviewCard({ store, note, review, onOpen, showActions = true }) 
   const contentSlot = h('div', { class: 'note-card__content' });
   card.appendChild(contentSlot);
 
-  const renderBody = () => {
-    const text = note.cue ? note.body : bodyPreview(note);
-    if (text) contentSlot.appendChild(h('p', { class: 'note-card__body' }, text));
+  const renderBody = ({ full = false } = {}) => {
+    // 答え合わせでは省略せず原文を出す。一覧の見た目用の省略と混同しない
+    const text = full ? (note.body || '').trim() : (note.cue ? note.body : bodyPreview(note));
+    if (text) {
+      contentSlot.appendChild(h('p', {
+        class: full ? 'note-card__body note-card__body--full' : 'note-card__body',
+      }, text));
+    }
   };
 
   const meta = h('div', { class: 'note-card__meta' },
@@ -121,7 +126,7 @@ export function reviewCard({ store, note, review, onOpen, showActions = true }) 
       onClick: (e) => {
         e.stopPropagation();
         contentSlot.replaceChildren();
-        renderBody();
+        renderBody({ full: true });
         showRating();
       },
     }));
@@ -135,6 +140,21 @@ export function reviewCard({ store, note, review, onOpen, showActions = true }) 
   return card;
 }
 
+/**
+ * 記録したときの言葉。
+ * 「忘れた」を責めず、また出会えたこととして受け止める。
+ */
+export function ratingMessage(rating, next) {
+  const when = next ? formatRelative(next.due) : null;
+  if (rating === 'forgot') {
+    return when ? `また会えました。${when}にもう一度出します。` : 'また会えました。';
+  }
+  if (rating === 'vague') {
+    return when ? `もう少しですね。${when}にもう一度。` : 'もう少しですね。';
+  }
+  return when ? `覚えていました。次は ${when}。` : '覚えていました。このメモは定着しました。';
+}
+
 /** その復習に対応する直近の出来事 ID（取り消せるかの判定に使う） */
 function lastEventIdFor(note, review) {
   for (let i = note.events.length - 1; i >= 0; i -= 1) {
@@ -145,14 +165,14 @@ function lastEventIdFor(note, review) {
 }
 
 /** メモ一覧・日別パネルで使うシンプルなメモカード */
-export function noteCard({ store, note, onOpen, subtitle }) {
+export function noteCard({ store, note, onOpen, subtitle, actions = [] }) {
   const next = note.reviews.find((r) => r.status === 'pending');
   const done = note.reviews.filter((r) => r.status !== 'pending').length;
   const childCount = store.childrenOf(note.id).length;
   const preview = bodyPreview(note);
 
   return h('article', {
-    class: `note-card ${note.parentId ? 'note-card--child' : ''}`,
+    class: `note-card ${note.parentId ? 'note-card--child' : ''} ${note.status === 'inbox' ? 'note-card--inbox' : ''}`,
     onClick: () => onOpen?.(note, 'detail'),
   },
   h('div', { class: 'note-card__head' },
@@ -169,7 +189,8 @@ export function noteCard({ store, note, onOpen, subtitle }) {
     h('span', { class: 'note-card__step' }, `${done}/${note.reviews.length}`),
     !next ? h('span', {}, '定着') : (subtitle ? null : h('span', {}, `次 ${formatRelative(next.due)}`)),
     childCount ? h('span', {}, `追加メモ ${childCount}`) : null,
-    note.tags.length ? tagChips(note.tags) : null));
+    note.tags.length ? tagChips(note.tags) : null),
+  actions.length ? h('div', { class: 'note-card__actions note-card__actions--quiet' }, ...actions) : null);
 }
 
 /** 復習履歴のタイムライン */

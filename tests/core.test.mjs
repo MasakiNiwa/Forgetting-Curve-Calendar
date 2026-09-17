@@ -74,9 +74,10 @@ test('curve: 間隔の正規化（年単位まで許容）', () => {
 });
 
 test('curve: プリセットは昇順の正の整数で、長期まで伸びる', () => {
-  PRESETS.forEach((p) => {
+  PRESETS.filter((p) => p.intervals.length).forEach((p) => {
     assert.deepEqual(p.intervals, sanitizeIntervals(p.intervals), `${p.id} の間隔が不正`);
   });
+  assert.deepEqual(PRESETS.find((p) => p.id === 'none').intervals, [], '「あとで決める」は予定を作らない');
   const lifelong = PRESETS.find((p) => p.id === 'lifelong');
   assert.ok(lifelong.intervals[lifelong.intervals.length - 1] >= 3650, '一生ものは 10 年以上先まで続く');
   const standard = PRESETS.find((p) => p.id === 'standard');
@@ -466,4 +467,159 @@ test('migration: v2 のデータに分散シードが割り当てられる', () 
   assert.notEqual(a.origin.seed, b.origin.seed, 'メモごとに違うシード');
   assert.notEqual(a.reviews.at(-1).due, b.reviews.at(-1).due, '遠い予定が散る');
   assert.equal(a.reviews[0].due, b.reviews[0].due, '翌日は同じ');
+});
+
+/* --------------------------------------------------- v0.4: 安心して書ける */
+
+test('store: アーカイブは解除できる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const note = store.addNote({ body: 'アーカイブする' });
+  store.archiveNote(note.id, true);
+  assert.equal(store.getNote(note.id).status, 'archived');
+  store.archiveNote(note.id, false);
+  assert.equal(store.getNote(note.id).status, 'active', '解除したら復習中に戻る');
+  assert.ok(store.getNote(note.id).reviews.some((r) => r.status === 'pending'));
+});
+
+test('store: 起点日は記録が無いときだけ変えられる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const note = store.addNote({ body: '日付を直す', anchorDate: '2026-09-17' });
+  store.updateNote(note.id, { anchorDate: '2026-09-10' });
+  assert.equal(store.getNote(note.id).anchorDate, '2026-09-10', '記録が無ければ変更できる');
+  assert.equal(store.getNote(note.id).reviews[0].due, '2026-09-11', '予定も追従する');
+
+  store.rateReview(note.id, store.getNote(note.id).reviews[0].id, 'known');
+  store.updateNote(note.id, { anchorDate: '2026-08-01' });
+  assert.equal(store.getNote(note.id).anchorDate, '2026-09-10', '記録があれば動かさない');
+  assert.equal(store.canChangeAnchor(store.getNote(note.id)), false);
+});
+
+test('store: 1日の上限は「こなしたら補充されない」', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  store.updateSettings({ overdueDailyLimit: 2 });
+  for (let i = 1; i <= 6; i += 1) {
+    store.addNote({ body: `放置メモ${i}`, anchorDate: addDays(todayKey(), -i * 3) });
+  }
+  const first = store.todayQueue();
+  assert.equal(first.overdue.length, 2);
+
+  first.overdue.forEach(({ note, review }) => store.rateReview(note.id, review.id, 'known'));
+  const second = store.todayQueue();
+  assert.equal(second.overdue.length, 0, '今日の分は終わり');
+  assert.equal(second.doneOverdueToday, 2);
+  assert.ok(second.waiting > 0, '残りは順番待ちとして保たれる');
+
+  // 本人が望んだときだけ追加で出せる
+  assert.ok(store.todayQueue(todayKey(), { extra: true }).overdue.length > 0);
+});
+
+test('store: 今日の一覧とキューの件数が一致する', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  store.updateSettings({ overdueDailyLimit: 3 });
+  // 期限切れと今日の予定が混ざる状況を作る
+  for (let i = 1; i <= 5; i += 1) store.addNote({ body: `古い${i}`, anchorDate: addDays(todayKey(), -i * 4) });
+  store.addNote({ body: '昨日のメモ', anchorDate: addDays(todayKey(), -1) });
+
+  const today = todayKey();
+  const tasks = store.tasksFor(today);
+  const queue = store.todayQueue(today);
+  const panelPending = tasks.overdue.length
+    + tasks.reviews.filter((r) => r.review.status === 'pending').length;
+  assert.equal(panelPending, queue.items.length, '日別パネルとキューの件数が同じ');
+
+  const ids = tasks.overdue.map((i) => i.note.id);
+  assert.equal(new Set(ids).size, ids.length, '同じメモが重複しない');
+});
+
+test('store: 「あとで決める」で保存でき、あとから復習を始められる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const note = store.addNote({ body: '雑な思いつき', presetId: 'none' });
+  assert.equal(note.reviews.length, 0, '復習予定は作らない');
+  assert.equal(note.status, 'inbox');
+  assert.equal(store.todayQueue().items.length, 0);
+
+  store.restartNote(note.id);
+  const started = store.getNote(note.id);
+  assert.ok(started.reviews.length > 0, 'あとから予定を付けられる');
+  assert.equal(started.status, 'active');
+  assert.equal(started.reviews[0].due, addDays(todayKey(), 1));
+});
+
+test('store: 別タブの変更を取り込んでも、どちらのメモも失わない', async () => {
+  const adapter = new MemoryAdapter();
+  const tabA = new Store(adapter);
+  await tabA.load();
+  const shared = tabA.addNote({ body: '共通のメモ' });
+  await tabA.flush();
+
+  const tabB = new Store(adapter);
+  await tabB.load();
+  const fromB = tabB.addNote({ body: 'Bタブで書いたメモ' });
+  await tabB.flush();
+
+  // A は B の存在を知らないまま保存する
+  const fromA = tabA.addNote({ body: 'Aタブで書いたメモ' });
+  await tabA.flush();
+
+  const check = new Store(adapter);
+  await check.load();
+  const ids = check.notes.map((n) => n.id);
+  assert.ok(ids.includes(shared.id), '共通のメモが残る');
+  assert.ok(ids.includes(fromA.id), 'A のメモが残る');
+  assert.ok(ids.includes(fromB.id), 'B のメモが消えない');
+});
+
+test('store: 保存の成否が呼び出し側へ返る', async () => {
+  const failing = new MemoryAdapter();
+  failing.save = async () => { throw new Error('quota'); };
+  const store = new Store(failing);
+  await store.load();
+  store.addNote({ body: '保存できないメモ' });
+  const result = await store.flush();
+  assert.equal(result.ok, false, '失敗が返る');
+  assert.ok(store.lastSaveError);
+  assert.equal(store.notes.length, 1, '画面上のメモは保持される');
+});
+
+/* ------------------------------------------------- v0.4: 続けたくなる区切り */
+
+test('store: 連続日数は「書いた日」も数える', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  // 今日・昨日・一昨日にメモを書いただけ（復習はしていない）
+  [0, -1, -2].forEach((off) => store.addNote({ body: `メモ${off}`, anchorDate: addDays(todayKey(), off) }));
+  assert.equal(store.streakDays(), 3, '復習が無い日でも途切れない');
+});
+
+test('store: 節目は「書けた・再会できた・気づきが生まれた」を拾う', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  assert.equal(store.milestones().achieved.length, 0);
+
+  const note = store.addNote({ body: '最初のメモ' });
+  let m = store.milestones();
+  assert.ok(m.achieved.some((x) => x.id === 'first-note'));
+  assert.equal(m.next.id, 'first-recall');
+
+  store.rateReview(note.id, note.reviews[0].id, 'known');
+  assert.ok(store.milestones().achieved.some((x) => x.id === 'first-recall'));
+
+  store.addNote({ body: '気づき', parentId: note.id });
+  assert.ok(store.milestones().achieved.some((x) => x.id === 'first-insight'));
+});
+
+test('store: 今週書いたメモと気づきを数える', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const parent = store.addNote({ body: '親', anchorDate: addDays(todayKey(), -2) });
+  store.addNote({ body: '気づき', parentId: parent.id, anchorDate: todayKey() });
+  store.addNote({ body: '古いメモ', anchorDate: addDays(todayKey(), -30) });
+  const recent = store.recentActivity(7);
+  assert.equal(recent.written, 2);
+  assert.equal(recent.insights, 1);
 });
