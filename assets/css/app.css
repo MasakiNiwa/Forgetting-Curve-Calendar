@@ -451,9 +451,9 @@ button, input, textarea, select { font: inherit; color: inherit; }
 
 .rating-btn { --rating-color: var(--fcc-outline); box-shadow: inset 0 0 0 1px var(--rating-color); color: var(--rating-color); background: transparent; }
 .rating-btn:hover { background: color-mix(in srgb, var(--rating-color) 12%, transparent); box-shadow: inset 0 0 0 1px var(--rating-color); }
-.rating-btn--known { --rating-color: var(--fcc-success); }
-.rating-btn--vague { --rating-color: var(--fcc-warning); }
-.rating-btn--forgot { --rating-color: var(--fcc-error); }
+.rating-btn--known { --rating-color: var(--fcc-rating-known); }
+.rating-btn--vague { --rating-color: var(--fcc-rating-vague); }
+.rating-btn--forgot { --rating-color: var(--fcc-rating-forgot); }
 
 .notes-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
 .search {
@@ -900,3 +900,65 @@ button, input, textarea, select { font: inherit; color: inherit; }
   .banner--sticky { margin: 0 32px 8px; }
   .today-card { align-items: center; }
 }
+
+.spread-row { display: flex; align-items: center; gap: 10px; }
+
+.spread-sample {
+  margin: 10px 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-surface-container);
+  font-size: .78rem;
+}
+.spread-sample__row { display: flex; gap: 10px; align-items: baseline; }
+.spread-sample__label { color: var(--fcc-on-surface-variant); min-width: 4em; }
+.spread-sample__value { font-variant-numeric: tabular-nums; }
+
+/* --- チャート --- */
+.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.chart--bar { max-width: 520px; }
+.chart--bars { max-width: 560px; }
+.chart--heatmap { max-width: 100%; min-width: 260px; }
+.chart-scroll { overflow-x: auto; padding-bottom: 4px; }
+.chart__axis { stroke: var(--fcc-outline-variant); stroke-width: 1; }
+.chart__axis-label { fill: var(--fcc-on-surface-variant); font-size: 8px; }
+.chart__bar { fill: var(--fcc-primary); }
+.chart__bar-group:hover .chart__bar { fill: var(--fcc-tertiary); }
+.chart__legend {
+  display: flex; flex-wrap: wrap; gap: 6px 16px;
+  margin-top: 10px; font-size: .78rem; color: var(--fcc-on-surface-variant);
+}
+.chart__legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.chart__legend-item b { color: var(--fcc-on-surface); font-variant-numeric: tabular-nums; }
+.chart__legend-pct { font-size: .72rem; }
+.chart__legend--scale { gap: 4px; align-items: center; }
+.chart__swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.heat-swatch { width: 12px; height: 12px; }
+.heat--0 { fill: var(--fcc-surface-container-highest); background: var(--fcc-surface-container-highest); }
+.heat--1 { fill: color-mix(in srgb, var(--fcc-primary) 28%, var(--fcc-surface-container-highest)); background: color-mix(in srgb, var(--fcc-primary) 28%, var(--fcc-surface-container-highest)); }
+.heat--2 { fill: color-mix(in srgb, var(--fcc-primary) 50%, var(--fcc-surface-container-highest)); background: color-mix(in srgb, var(--fcc-primary) 50%, var(--fcc-surface-container-highest)); }
+.heat--3 { fill: color-mix(in srgb, var(--fcc-primary) 74%, var(--fcc-surface-container-highest)); background: color-mix(in srgb, var(--fcc-primary) 74%, var(--fcc-surface-container-highest)); }
+.heat--4 { fill: var(--fcc-primary); background: var(--fcc-primary); }
+.stat__hint { font-size: .68rem; color: var(--fcc-on-surface-variant); margin-top: 2px; }
+
+/* --- 記憶の枝 --- */
+.branch { display: flex; flex-direction: column; gap: 2px; }
+.branch__item {
+  display: flex; align-items: flex-start; gap: 8px;
+  width: 100%; padding: 8px 10px;
+  border: 0; border-radius: var(--fcc-radius-s);
+  background: transparent; color: inherit; text-align: left; cursor: pointer;
+}
+.branch__item:hover { background: var(--fcc-surface-container); }
+.branch__item--current { background: var(--fcc-secondary-container); color: var(--fcc-on-secondary-container); }
+.branch__mark { display: flex; color: var(--fcc-tertiary); margin-top: 2px; flex: none; }
+.branch__text { min-width: 0; }
+.branch__title {
+  display: block; font-size: .86rem; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.branch__meta { display: block; font-size: .72rem; color: var(--fcc-on-surface-variant); }
+.branch__item--current .branch__meta { color: inherit; opacity: .8; }
+
+.chip--truncate { max-width: 100%; display: inline-flex; }
+.chip--truncate > * , .chip--truncate { overflow: hidden; text-overflow: ellipsis; }

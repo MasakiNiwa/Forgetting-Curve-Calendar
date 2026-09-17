@@ -5,6 +5,7 @@ import { toast } from './overlays.js';
 import { openNoteEditor } from './editor.js';
 import { renderCalendar, focusDate } from './views/calendar.js';
 import { renderNotes } from './views/notes.js';
+import { renderStats } from './views/stats.js';
 import { renderSettings } from './views/settings.js';
 import { renderHelp } from './views/help.js';
 import { currentRoute, navigate, startRouter } from './router.js';
@@ -14,6 +15,7 @@ import { todayKey } from '../core/date.js';
 const ROUTES = [
   { id: 'calendar', label: 'カレンダー', iconName: 'calendar', render: renderCalendar },
   { id: 'notes', label: 'メモ', iconName: 'notes', render: renderNotes },
+  { id: 'stats', label: '記録', iconName: 'data', render: renderStats },
   { id: 'settings', label: '設定', iconName: 'settings', render: renderSettings },
   { id: 'help', label: 'ヘルプ', iconName: 'help', render: renderHelp },
 ];

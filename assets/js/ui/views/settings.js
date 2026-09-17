@@ -4,7 +4,9 @@ import { icon } from '../icons.js';
 import { curvePreview } from '../components.js';
 import { confirmDialog, toast, openDialog } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
-import { PRESETS, getPreset, sanitizeIntervals, MAX_INTERVAL_DAYS } from '../../core/curve.js';
+import {
+  MAX_INTERVAL_DAYS, PRESETS, SPREADS, getPreset, getSpread, sanitizeIntervals, spreadIntervals,
+} from '../../core/curve.js';
 import { FORMATS, buildFilename, downloadText, readFileAsText, serializeBackup } from '../../core/exporter.js';
 import { APP_VERSION } from '../../core/config.js';
 import { formatDateTime, formatDuration } from '../../core/date.js';
@@ -144,12 +146,51 @@ function renderCurveCard(store) {
         `復習 ${intervals.length} 回・最後は ${formatDuration(last)}後：`
         + `${intervals.map((d) => formatDuration(d)).join(' → ')}`),
       s.presetId === 'custom' ? customIntervalEditor(store) : null,
+      h('div', { class: 'divider' }),
+      spreadSection(store, intervals),
     ].filter(Boolean);
     card.replaceChildren(...children);
   };
 
   draw();
   return card;
+}
+
+/** 復習日の分散 */
+function spreadSection(store, intervals) {
+  const s = store.settings;
+  const current = getSpread(s.spreadId);
+  // 同じ日に 4 件書いたと仮定して、最後の回がどのくらい散るかを見せる
+  const samples = [17, 431, 2088, 7345].map((seed) => spreadIntervals(intervals, seed, current.ratio));
+  const lastStep = intervals.length - 1;
+  const spanDays = current.ratio
+    ? Math.max(...samples.map((v) => v[lastStep])) - Math.min(...samples.map((v) => v[lastStep]))
+    : 0;
+
+  return h('div', {},
+    h('div', { class: 'card__title', style: { fontSize: '.88rem' } },
+      h('span', { html: icon('dice', { size: 18 }), style: { display: 'flex' } }), '復習日の分散'),
+    h('div', { class: 'card__desc' },
+      '同じ日に何件もメモを書くと、そのままでは未来の復習日まで同じ日に重なります。'
+      + 'メモごとのシードで、先の予定ほど前後にずらします。'),
+    h('div', { class: 'filter-row' },
+      ...SPREADS.map((sp) => h('button', {
+        type: 'button',
+        class: 'chip',
+        'aria-pressed': String(s.spreadId === sp.id),
+        onClick: () => store.updateSettings({ spreadId: sp.id }),
+      }, sp.label))),
+    h('div', { class: 'field__hint', style: { marginTop: '10px' } }, current.description),
+    h('div', { class: 'spread-sample' },
+      ...samples.map((v, i) => h('div', { class: 'spread-sample__row' },
+        h('span', { class: 'spread-sample__label' }, `メモ${i + 1}`),
+        h('span', { class: 'spread-sample__value' },
+          `${formatDuration(v[0])}後 … ${formatDuration(v[lastStep])}後`)))),
+    h('div', { class: 'field__hint' },
+      current.ratio
+        ? `同じ日に書いた場合でも、最後の回は ${formatDuration(spanDays)} ほどの幅に散ります（翌日の復習は動きません）。`
+        : '分散なし。同じ日に書いたメモは、未来でも同じ日に復習することになります。'),
+    h('div', { class: 'field__hint' }, 'この設定は、これから書くメモに使われます。メモごとの変更は編集画面から行えます。'));
 }
 
 function customIntervalEditor(store) {

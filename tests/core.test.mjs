@@ -9,8 +9,9 @@ import {
   addDays, diffDays, formatDuration, isValidKey, monthMatrix, toKey, todayKey, weekdayLabels,
 } from '../assets/js/core/date.js';
 import {
-  MAX_INTERVAL_DAYS, PRESETS, buildSchedule, clampEase, createEvent, nextReview,
-  refreshNote, replay, retentionSeries, sanitizeIntervals,
+  MAX_INTERVAL_DAYS, PRESETS, SPREADS, buildSchedule, clampEase, createEvent, getSpread,
+  nextReview, refreshNote, replay, retentionSeries, sanitizeIntervals, sanitizeSeed,
+  seedFromString, spreadIntervals,
 } from '../assets/js/core/curve.js';
 import {
   DEFAULT_SETTINGS, bodyPreview, createNote, displayTitle, makeEventId, normalizeData, recallCue,
@@ -265,8 +266,9 @@ test('models: メモ作成時に復習予定が作られる', () => {
   assert.equal(note.reviews.length, note.schedule.intervals.length);
   assert.deepEqual(note.tags, ['a', 'b']);
   assert.equal(note.status, 'active');
-  assert.equal(note.reviews[0].due, '2026-09-18');
-  assert.deepEqual(note.origin.intervals, note.schedule.intervals);
+  assert.equal(note.reviews[0].due, '2026-09-18', '翌日の復習は分散の影響を受けない');
+  assert.equal(note.origin.intervals.length, note.schedule.intervals.length);
+  assert.ok(Number.isInteger(note.origin.seed), 'シードが割り当てられる');
 });
 
 test('models: 手掛かりと本文', () => {
@@ -302,7 +304,7 @@ test('models: 壊れたデータを読み込んでも復旧できる', () => {
 
 /* ------------------------------------------------------------ migrations */
 
-test('migration: v1 のデータを v2 へ移しても予定日が変わらない', () => {
+test('migration: v1 のデータを移行しても予定日が変わらない（分散なしの場合）', () => {
   const v1 = {
     schemaVersion: 1,
     notes: [{
@@ -323,12 +325,12 @@ test('migration: v1 のデータを v2 へ移しても予定日が変わらな�
         { id: 'r4', step: 3, due: '2026-09-16', status: 'pending', rating: null, completedAt: null, extra: false },
       ],
     }],
-    settings: {},
+    settings: { spreadId: 'none' },
     meta: {},
   };
   const migrated = normalizeData(migrate(v1));
   const note = migrated.notes[0];
-  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.schemaVersion, 3);
   assert.equal(note.events.length, 1);
   assert.equal(note.events[0].type, 'rate');
   assert.equal(note.schedule.ease, 2.6, '定着度が再現される');
@@ -373,4 +375,95 @@ test('store: 同じメモの期限切れは 1 件にまとめる', async () => {
   assert.equal(queue.overdue.length, 1, 'キューには 1 件だけ出す');
   assert.equal(queue.overdue[0].review.due, rawOverdue[0].due, 'いちばん古い回を出す');
   assert.equal(queue.items.filter((i) => i.note.id === note.id).length, 1);
+});
+
+/* ------------------------------------------------------------ 分散 (seed) */
+
+test('spread: シードが違えば、遠い未来ほど日付が散る', () => {
+  const base = [1, 3, 7, 14, 30, 60, 120, 240, 480, 960, 1920];
+  const ratio = getSpread('normal').ratio;
+  const seeds = [11, 222, 3333, 4444, 555];
+  const variants = seeds.map((seed) => spreadIntervals(base, seed, ratio));
+
+  // 翌日（1日後）は全員そろって動かない
+  assert.deepEqual([...new Set(variants.map((v) => v[0]))], [1]);
+
+  // 1 年前後（240日）以降はばらける
+  const far = new Set(variants.map((v) => v[7]));
+  assert.ok(far.size >= 4, `240日の回が散らばる: ${[...far].join(',')}`);
+  const farthest = new Set(variants.map((v) => v[10]));
+  assert.ok(farthest.size >= 4, '最後の回も散らばる');
+
+  // 散らばりの幅は間隔に比例する
+  const spanAt = (i) => Math.max(...variants.map((v) => v[i])) - Math.min(...variants.map((v) => v[i]));
+  assert.ok(spanAt(10) > spanAt(7), '遠い回ほど大きく散る');
+  assert.ok(spanAt(4) <= 30 * ratio * 2 + 1, '近い回は控えめ');
+});
+
+test('spread: 決定的で、並び順と下限を必ず守る', () => {
+  const base = [1, 3, 7, 14, 30, 60, 120, 240, 480, 960, 1920];
+  for (const seed of [0, 1, 7, 99, 1234, 9999]) {
+    const a = spreadIntervals(base, seed, 0.22);
+    const b = spreadIntervals(base, seed, 0.22);
+    assert.deepEqual(a, b, '同じシードなら同じ結果');
+    assert.equal(a.length, base.length);
+    a.forEach((v, i) => {
+      assert.ok(v >= 1, '1日以上');
+      if (i > 0) assert.ok(v > a[i - 1], '前の回より必ずあと');
+    });
+  }
+  assert.deepEqual(spreadIntervals(base, 42, 0), base, '分散なしならプリセットどおり');
+  assert.deepEqual(SPREADS.map((s) => s.id), ['none', 'small', 'normal', 'large']);
+  assert.equal(sanitizeSeed(-1), 9999);
+  assert.equal(sanitizeSeed(10001), 1);
+  assert.equal(seedFromString('n_abc'), seedFromString('n_abc'));
+});
+
+test('spread: 同じ日に書いた複数のメモは未来の復習日が重ならない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const notes = Array.from({ length: 6 }, (_, i) => store.addNote({
+    body: `同じ日のメモ${i}`, anchorDate: '2026-09-17', presetId: 'standard',
+  }));
+  const lastDues = notes.map((n) => n.reviews[n.reviews.length - 1].due);
+  assert.ok(new Set(lastDues).size >= 5, `最後の回が散る: ${lastDues.join(',')}`);
+
+  // 翌日はそろって同じ（想定どおり）
+  assert.equal(new Set(notes.map((n) => n.reviews[0].due)).size, 1);
+});
+
+test('spread: シードを変えると未来の予定だけ組み直される', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const note = store.addNote({ body: 'シード変更', anchorDate: '2026-09-17', presetId: 'standard' });
+  store.rateReview(note.id, note.reviews[0].id, 'known');
+  const doneBefore = store.getNote(note.id).reviews.filter((r) => r.status === 'done').length;
+  const farBefore = store.getNote(note.id).reviews.at(-1).due;
+
+  store.updateNote(note.id, { seed: 4242 });
+  const after = store.getNote(note.id);
+  assert.equal(after.schedule.seed, 4242);
+  assert.equal(after.reviews.filter((r) => r.status === 'done').length, doneBefore, '記録は残る');
+  assert.notEqual(after.reviews.at(-1).due, farBefore, '先の予定は組み直される');
+});
+
+test('migration: v2 のデータに分散シードが割り当てられる', () => {
+  const v2 = {
+    schemaVersion: 2,
+    notes: [
+      { id: 'n_a', body: 'A', anchorDate: '2026-09-17', events: [],
+        origin: { presetId: 'standard', intervals: [1, 3, 7, 14, 30, 60, 120, 240, 480, 960, 1920] } },
+      { id: 'n_b', body: 'B', anchorDate: '2026-09-17', events: [],
+        origin: { presetId: 'standard', intervals: [1, 3, 7, 14, 30, 60, 120, 240, 480, 960, 1920] } },
+    ],
+    settings: {},
+    meta: {},
+  };
+  const data = normalizeData(migrate(v2));
+  assert.equal(data.schemaVersion, 3);
+  const [a, b] = data.notes;
+  assert.ok(Number.isInteger(a.origin.seed) && Number.isInteger(b.origin.seed));
+  assert.notEqual(a.origin.seed, b.origin.seed, 'メモごとに違うシード');
+  assert.notEqual(a.reviews.at(-1).due, b.reviews.at(-1).due, '遠い予定が散る');
+  assert.equal(a.reviews[0].due, b.reviews[0].due, '翌日は同じ');
 });

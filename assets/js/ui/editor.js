@@ -2,9 +2,12 @@
 import { h, button, iconButton, clear } from './dom.js';
 import { icon } from './icons.js';
 import { openDialog, openSheet, openMenu, confirmDialog, toast } from './overlays.js';
-import { curvePreview, reviewTimeline, noteCard, tagChips } from './components.js';
+import { branchTree, curvePreview, reviewTimeline, tagChips } from './components.js';
 import { openExportDialog } from './exportDialog.js';
-import { PRESETS, getPreset, resolveIntervals, sanitizeIntervals } from '../core/curve.js';
+import {
+  PRESETS, SPREADS, baseIntervalsOf, getPreset, getSpread, randomSeed, resolveIntervals,
+  sanitizeIntervals, spreadIdOf, spreadIntervals,
+} from '../core/curve.js';
 import { displayTitle, recallCue } from '../core/models.js';
 import {
   addDays, diffDays, formatDateTime, formatDuration, formatLong, formatRelative, formatSmart, todayKey,
@@ -31,7 +34,9 @@ export function openNoteEditor(store, options = {}) {
     tags: (existing?.tags ?? parent?.tags ?? []).join(' '),
     anchorDate: existing?.anchorDate ?? options.anchorDate ?? todayKey(),
     presetId: existing?.schedule.presetId ?? settings.presetId,
-    intervals: existing ? [...existing.schedule.intervals] : resolveIntervals(settings.presetId, settings),
+    intervals: existing ? baseIntervalsOf(existing) : resolveIntervals(settings.presetId, settings),
+    spread: existing ? (existing.schedule.spread ?? 0) : getSpread(settings.spreadId).ratio,
+    seed: existing ? (existing.schedule.seed ?? 0) : randomSeed(),
   };
 
   const bodyInput = h('textarea', {
@@ -88,7 +93,29 @@ export function openNoteEditor(store, options = {}) {
   function renderSchedule() {
     clear(scheduleBox);
     const preset = getPreset(state.presetId);
-    const intervals = sanitizeIntervals(state.intervals);
+    const base = sanitizeIntervals(state.intervals);
+    const intervals = spreadIntervals(base, state.seed, state.spread);
+    const spreadSelect = h('select', {
+      class: 'select',
+      style: { width: 'auto' },
+      'aria-label': '復習日の分散',
+      onChange: (e) => { state.spread = getSpread(e.target.value).ratio; renderSchedule(); },
+    }, ...SPREADS.map((sp) => h('option', {
+      value: sp.id,
+      selected: sp.id === spreadIdOf(state.spread),
+    }, sp.label)));
+
+    const seedInput = h('input', {
+      class: 'input',
+      type: 'number',
+      min: '0',
+      max: '9999',
+      value: String(state.seed),
+      style: { width: '6em' },
+      'aria-label': '分散のシード',
+      onChange: (e) => { state.seed = Number(e.target.value) || 0; renderSchedule(); },
+    });
+
     scheduleBox.append(
       h('div', { class: 'card__title' }, '復習の予定'),
       h('div', { class: 'card__desc' }, preset.description),
@@ -100,6 +127,24 @@ export function openNoteEditor(store, options = {}) {
       h('div', { class: 'field__hint' },
         `合計 ${intervals.length} 回・最後は ${formatDuration(intervals[intervals.length - 1])}後の `
         + `${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`),
+
+      h('div', { class: 'divider' }),
+      h('div', { class: 'spread-row' },
+        h('div', { style: { flex: '1', minWidth: '0' } },
+          h('div', { class: 'field__label', style: { marginBottom: '2px' } }, '復習日の分散'),
+          h('div', { class: 'field__hint' },
+            '同じ日に書いたメモの復習日が重ならないよう、先の予定ほど前後にずらします。')),
+        spreadSelect),
+      state.spread ? h('div', { class: 'spread-row', style: { marginTop: '8px' } },
+        h('div', { style: { flex: '1', minWidth: '0' } },
+          h('div', { class: 'field__label', style: { marginBottom: '2px' } }, 'シード'),
+          h('div', { class: 'field__hint' }, 'ずらし方を決める数字です。変えると先の予定が組み替わります。')),
+        seedInput,
+        iconButton(icon('dice', { size: 20 }), {
+          label: 'シードを振り直す',
+          className: 'icon-btn icon-btn--filled',
+          onClick: () => { state.seed = randomSeed(); renderSchedule(); },
+        })) : null,
     );
   }
   renderSchedule();
@@ -163,6 +208,8 @@ export function openNoteEditor(store, options = {}) {
               tags: state.tags,
               presetId: state.presetId,
               intervals: state.intervals,
+              spread: state.spread,
+              seed: state.seed,
             });
             toast('メモを更新しました');
           } else {
@@ -175,6 +222,8 @@ export function openNoteEditor(store, options = {}) {
               parentId: options.parentId || null,
               presetId: state.presetId,
               intervals: state.intervals,
+              spread: state.spread,
+              seed: state.seed,
             });
             const first = note.reviews[0];
             toast(first ? `保存しました。次の復習は ${formatRelative(first.due)}` : '保存しました');
@@ -212,7 +261,7 @@ export function openNoteDetail(store, noteId) {
         iconButton(icon('more'), { label: '操作', onClick: () => openNoteMenu(store, note) })),
 
       parent ? h('button', {
-        class: 'chip',
+        class: 'chip chip--truncate',
         style: { marginTop: '8px' },
         onClick: () => openNoteDetail(store, parent.id),
       }, `元のメモ: ${displayTitle(parent)}`) : null,
@@ -262,15 +311,18 @@ export function openNoteDetail(store, noteId) {
         onClick: () => { store.restartNote(note.id); toast('今日を起点に復習を組み直しました'); },
       }) : null,
 
-      children.length ? h('div', {},
+      (children.length || note.parentId) ? h('div', {},
         h('div', { class: 'daypanel__section-title' },
           h('span', { html: icon('branch', { size: 16 }), style: { display: 'flex' } }),
-          `このメモから生まれた気づき（${children.length}）`),
-        ...children.map((c) => noteCard({
-          store,
-          note: c,
-          onOpen: (n, kind) => (kind === 'menu' ? openNoteMenu(store, n) : openNoteDetail(store, n.id)),
-        }))) : null,
+          '記憶の枝'),
+        h('div', { class: 'field__hint', style: { marginBottom: '8px' } },
+          children.length
+            ? `このメモから ${store.descendantsOf(note.id).length} 個の気づきが生まれました。`
+            : '元のメモから枝分かれした気づきです。'),
+        branchTree(store, store.rootOf(note), {
+          currentId: note.id,
+          onOpen: (target) => { if (target.id !== note.id) openNoteDetail(store, target.id); },
+        })) : null,
 
       h('div', { class: 'field__hint', style: { marginTop: '16px' } },
         `更新 ${formatDateTime(note.updatedAt)}`));

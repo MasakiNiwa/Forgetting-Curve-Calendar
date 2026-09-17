@@ -5,8 +5,9 @@
 import { SCHEMA_VERSION, APP_VERSION } from './config.js';
 import { isValidKey, todayKey } from './date.js';
 import {
-  DEFAULT_PRESET_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, localDayOf, refreshNote,
-  resolveIntervals, sanitizeIntervals,
+  DEFAULT_PRESET_ID, DEFAULT_SPREAD_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, getSpread,
+  localDayOf, randomSeed, refreshNote, resolveIntervals, sanitizeIntervals, sanitizeSeed,
+  seedFromString,
 } from './curve.js';
 
 export function makeId(prefix = 'n') {
@@ -22,6 +23,7 @@ export const makeEventId = () => makeId('e');
 export const DEFAULT_SETTINGS = Object.freeze({
   theme: 'system',            // system | light | dark
   presetId: DEFAULT_PRESET_ID,
+  spreadId: DEFAULT_SPREAD_ID,   // 復習日の分散の強さ
   customIntervals: [1, 3, 7, 14, 30, 60, 120, 365, 1095],
   adaptive: true,
   weekStart: 0,               // 0=日曜, 1=月曜
@@ -54,6 +56,10 @@ export function createNote(input, settings) {
   const intervals = presetId === 'custom'
     ? sanitizeIntervals(input.intervals || settings.customIntervals)
     : resolveIntervals(presetId, settings);
+  const spread = input.spread !== undefined
+    ? Number(input.spread) || 0
+    : getSpread(settings.spreadId).ratio;
+  const seed = input.seed !== undefined ? sanitizeSeed(input.seed) : randomSeed();
 
   const note = {
     id: makeNoteId(),
@@ -67,8 +73,8 @@ export function createNote(input, settings) {
     updatedAt: now,
     status: 'active',
     color: input.color || null,
-    origin: { presetId, intervals },
-    schedule: { presetId, intervals, ease: EASE_DEFAULT, adaptive: settings.adaptive !== false },
+    origin: { presetId, intervals, spread, seed },
+    schedule: { presetId, intervals, ease: EASE_DEFAULT, seed, spread, adaptive: settings.adaptive !== false },
     events: [],
     reviews: [],
   };
@@ -134,6 +140,7 @@ export function normalizeSettings(raw) {
   s.hideBodyUntilRecall = s.hideBodyUntilRecall !== false;
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
   s.customIntervals = sanitizeIntervals(s.customIntervals);
+  s.spreadId = getSpread(s.spreadId).id;
   const limit = Number(s.overdueDailyLimit);
   s.overdueDailyLimit = Number.isFinite(limit) && limit >= 0 ? Math.round(limit) : 10;
   if (!['markdown', 'text', 'csv', 'json'].includes(s.defaultExportFormat)) {
@@ -158,6 +165,8 @@ function normalizeEvent(raw) {
   if (raw.type === 'reschedule') {
     event.intervals = sanitizeIntervals(raw.intervals);
     event.presetId = raw.presetId || DEFAULT_PRESET_ID;
+    if (raw.spread !== undefined) event.spread = Number(raw.spread) || 0;
+    if (raw.seed !== undefined) event.seed = sanitizeSeed(raw.seed);
   }
   return event;
 }
@@ -183,6 +192,13 @@ export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
     origin: {
       presetId: raw.origin?.presetId || raw.schedule?.presetId || DEFAULT_PRESET_ID,
       intervals: originIntervals,
+      // 分散の設定がないデータ（v0.2 以前）は、id から安定したシードを割り当てる
+      spread: raw.origin?.spread !== undefined
+        ? Number(raw.origin.spread) || 0
+        : getSpread(settings.spreadId).ratio,
+      seed: raw.origin?.seed !== undefined
+        ? sanitizeSeed(raw.origin.seed)
+        : seedFromString(raw.id || Math.random()),
     },
     schedule: {
       presetId: raw.schedule?.presetId || raw.origin?.presetId || DEFAULT_PRESET_ID,

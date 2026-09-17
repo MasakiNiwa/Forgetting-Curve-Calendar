@@ -28,9 +28,23 @@ async function boot() {
     }
   }, 60_000);
 
+  registerServiceWorker();
+
   // 開発・デバッグ用
   window.__fcc = { store, version: APP_VERSION };
   console.info(`${APP_NAME} v${APP_VERSION}`);
+}
+
+/** オフラインでも開けるようにする（データ自体は端末内の localStorage） */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  // file:// で開いたときは登録しない
+  if (!['http:', 'https:'].includes(window.location.protocol)) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch((err) => {
+      console.info('[fcc] オフライン対応は利用できません', err);
+    });
+  });
 }
 
 if (document.readyState === 'loading') {

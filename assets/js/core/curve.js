@@ -52,6 +52,98 @@ export const DEFAULT_PRESET_ID = 'standard';
 /** 間隔として許す最大日数（約 100 年） */
 export const MAX_INTERVAL_DAYS = 36500;
 
+/**
+ * 復習日の分散。
+ *
+ * 同じ日に何件もメモを書くと、そのままでは未来の復習日まで丸ごと同じ日に重なる。
+ * そこでメモごとに「シード」を持たせ、起点から離れるほど大きく前後へずらす。
+ * ずらす量は間隔に比例するので、翌日の復習はほぼ動かず、数年先は数ヶ月単位で散る。
+ */
+export const SPREADS = [
+  { id: 'none', label: '分散しない', ratio: 0, description: 'プリセットどおりの日付に置きます。' },
+  { id: 'small', label: '控えめ', ratio: 0.06, description: '1年後で ±3週間ほど散らします。' },
+  { id: 'normal', label: '標準', ratio: 0.12, description: '1年後で ±1ヶ月半ほど散らします。' },
+  { id: 'large', label: '大きめ', ratio: 0.22, description: '1年後で ±2ヶ月半ほど散らします。' },
+];
+
+export const DEFAULT_SPREAD_ID = 'normal';
+export const MAX_SEED = 9999;
+
+export function getSpread(spreadId) {
+  return SPREADS.find((s) => s.id === spreadId) || SPREADS[2];
+}
+
+/** 比率から一番近いプリセット ID を引く（保存値は比率で持つ） */
+export function spreadIdOf(ratio) {
+  const found = SPREADS.find((s) => Math.abs(s.ratio - Number(ratio)) < 0.001);
+  return found ? found.id : DEFAULT_SPREAD_ID;
+}
+
+export function sanitizeSeed(seed) {
+  const n = Math.round(Number(seed));
+  if (!Number.isFinite(n)) return 0;
+  return ((n % (MAX_SEED + 1)) + MAX_SEED + 1) % (MAX_SEED + 1);
+}
+
+export function randomSeed() {
+  return Math.floor(Math.random() * (MAX_SEED + 1));
+}
+
+/** 文字列から安定したシードを作る（移行時に id から割り当てる用） */
+export function seedFromString(text) {
+  let h = 2166136261;
+  for (let i = 0; i < String(text).length; i += 1) {
+    h ^= String(text).charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return sanitizeSeed(Math.abs(h));
+}
+
+/** シードとステップから -1〜1 の決定的な値を作る */
+function jitterUnit(seed, step) {
+  let x = (sanitizeSeed(seed) * 2654435761 + (step + 1) * 40503) >>> 0;
+  x ^= x << 13; x >>>= 0;
+  x ^= x >>> 17;
+  x ^= x << 5; x >>>= 0;
+  return (x / 4294967295) * 2 - 1;
+}
+
+/**
+ * 間隔にシード由来のゆらぎを与える。
+ * - ずらす幅は「間隔 × ratio」なので、遠い先ほど大きく散る
+ * - 1〜数日の間隔は四捨五入で 0 になり、実質動かない
+ * - 並び順は必ず保つ（前の回より必ず 1 日以上あと）
+ */
+export function spreadIntervals(intervals, seed = 0, ratio = 0) {
+  const list = sanitizeIntervals(intervals);
+  if (!ratio) return list;
+  const out = [];
+  list.forEach((days, step) => {
+    const offset = Math.round(days * ratio * jitterUnit(seed, step));
+    let value = Math.max(1, days + offset);
+    if (step > 0) value = Math.max(value, out[step - 1] + 1);
+    out.push(Math.min(MAX_INTERVAL_DAYS, value));
+  });
+  return out;
+}
+
+/**
+ * いま有効な「分散前」の間隔。
+ * 途中で曲線を変えている場合は、最後の reschedule の値が基準になる。
+ */
+export function baseIntervalsOf(note) {
+  for (let i = (note.events || []).length - 1; i >= 0; i -= 1) {
+    const ev = note.events[i];
+    if (ev.type === 'reschedule' && Array.isArray(ev.intervals)) return sanitizeIntervals(ev.intervals);
+  }
+  return sanitizeIntervals(note.origin?.intervals);
+}
+
+/** メモの実効間隔（プリセット + 分散） */
+export function effectiveIntervals(origin) {
+  return spreadIntervals(origin?.intervals, origin?.seed ?? 0, origin?.spread ?? 0);
+}
+
 /** 想起結果の定義 */
 export const RATINGS = {
   known: { id: 'known', label: '覚えていた', short: '○', easeDelta: 0.1, behavior: 'advance' },
@@ -141,7 +233,9 @@ export function replay(note, { adaptive = true } = {}) {
   let counter = 0;
   const makeKey = () => `g${counter++}`;
 
-  let intervals = sanitizeIntervals(note.origin?.intervals);
+  let seed = sanitizeSeed(note.origin?.seed);
+  let spread = Number(note.origin?.spread) || 0;
+  let intervals = spreadIntervals(note.origin?.intervals, seed, spread);
   let presetId = note.origin?.presetId || DEFAULT_PRESET_ID;
   let ease = EASE_DEFAULT;
   let reviews = buildSchedule(note.anchorDate, intervals, makeKey);
@@ -220,7 +314,9 @@ export function replay(note, { adaptive = true } = {}) {
       }
 
       case 'reschedule': {
-        intervals = sanitizeIntervals(ev.intervals);
+        if (ev.seed !== undefined) seed = sanitizeSeed(ev.seed);
+        if (ev.spread !== undefined) spread = Number(ev.spread) || 0;
+        intervals = spreadIntervals(ev.intervals, seed, spread);
         presetId = ev.presetId || presetId;
         const doneSteps = reviews.filter((r) => r.status !== 'pending').map((r) => r.step);
         const maxDone = doneSteps.length ? Math.max(...doneSteps) : -1;
@@ -238,7 +334,7 @@ export function replay(note, { adaptive = true } = {}) {
 
   reviews.sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : a.step - b.step));
   const status = reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
-  return { reviews, ease, intervals, presetId, status };
+  return { reviews, ease, intervals, presetId, status, seed, spread };
 }
 
 /**
@@ -250,8 +346,10 @@ export function refreshNote(note, options = {}) {
   note.reviews = result.reviews;
   note.schedule = {
     presetId: result.presetId,
-    intervals: result.intervals,
+    intervals: result.intervals,   // 分散を反映した実際の間隔
     ease: result.ease,
+    seed: result.seed,
+    spread: result.spread,
     adaptive: options.adaptive !== false,
   };
   if (note.status !== 'archived') note.status = result.status;
