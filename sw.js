@@ -7,9 +7,11 @@
  * - バージョンを変えると古いキャッシュを破棄する。
  * - メモのデータはキャッシュではなく localStorage にあるため、ここでは扱わない。
  */
-const VERSION = 'v0.3.0';
-const CACHE = `fcc-${VERSION}`;
+const VERSION = 'v0.4.0';
+const PREFIX = 'fcc-';
+const CACHE = `${PREFIX}${VERSION}`;
 
+// main.js だけでは足りない。ES Modules の依存もすべて入れておく
 const PRECACHE = [
   './',
   './index.html',
@@ -18,6 +20,31 @@ const PRECACHE = [
   './assets/css/app.css',
   './assets/icons/favicon.svg',
   './assets/js/main.js',
+  './assets/js/core/config.js',
+  './assets/js/core/curve.js',
+  './assets/js/core/date.js',
+  './assets/js/core/drafts.js',
+  './assets/js/core/exporter.js',
+  './assets/js/core/migrations.js',
+  './assets/js/core/models.js',
+  './assets/js/core/storage.js',
+  './assets/js/core/store.js',
+  './assets/js/ui/app.js',
+  './assets/js/ui/charts.js',
+  './assets/js/ui/components.js',
+  './assets/js/ui/dom.js',
+  './assets/js/ui/editor.js',
+  './assets/js/ui/exportDialog.js',
+  './assets/js/ui/icons.js',
+  './assets/js/ui/overlays.js',
+  './assets/js/ui/reviewSession.js',
+  './assets/js/ui/router.js',
+  './assets/js/ui/theme.js',
+  './assets/js/ui/views/calendar.js',
+  './assets/js/ui/views/help.js',
+  './assets/js/ui/views/notes.js',
+  './assets/js/ui/views/settings.js',
+  './assets/js/ui/views/stats.js',
 ];
 
 self.addEventListener('install', (event) => {
@@ -32,7 +59,10 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // 同じドメインで動く他のアプリのキャッシュには触れない
+      .then((keys) => Promise.all(
+        keys.filter((k) => k.startsWith(PREFIX) && k !== CACHE).map((k) => caches.delete(k)),
+      ))
       .then(() => self.clients.claim()),
   );
 });

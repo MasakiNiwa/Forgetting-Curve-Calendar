@@ -9,6 +9,7 @@ import {
   sanitizeIntervals, spreadIdOf, spreadIntervals,
 } from '../core/curve.js';
 import { displayTitle, recallCue } from '../core/models.js';
+import { clearDraft, draftKey, isEmptyDraft, loadDraft, saveDraft } from '../core/drafts.js';
 import {
   addDays, diffDays, formatDateTime, formatDuration, formatLong, formatRelative, formatSmart, todayKey,
 } from '../core/date.js';
@@ -19,6 +20,13 @@ import {
 
 /**
  * メモエディタを開く。
+ *
+ * 方針:
+ * - 本文が主役。開いたらすぐ書ける。タイトル・手掛かり・タグは必要なときだけ出す
+ * - 復習の設定は畳んでおく（既定のままで困らない）
+ * - 入力は下書きとして自動保存し、閉じても消えない
+ * - 保存が終わるまで画面を閉じない（保存できていないのに閉じない）
+ *
  * @param {Store} store
  * @param {{noteId?:string, parentId?:string, anchorDate?:string}} options
  */
@@ -26,8 +34,13 @@ export function openNoteEditor(store, options = {}) {
   const existing = options.noteId ? store.getNote(options.noteId) : null;
   const parent = options.parentId ? store.getNote(options.parentId) : null;
   const settings = store.settings;
+  const key = draftKey({
+    noteId: options.noteId,
+    parentId: options.parentId,
+    anchorDate: options.anchorDate,
+  });
 
-  const state = {
+  const base = {
     title: existing?.title ?? '',
     cue: existing?.cue ?? '',
     body: existing?.body ?? '',
@@ -39,209 +52,361 @@ export function openNoteEditor(store, options = {}) {
     seed: existing ? (existing.schedule.seed ?? 0) : randomSeed(),
   };
 
+  const draft = loadDraft(key);
+  const restored = draft && !isEmptyDraft(draft.value);
+  const state = restored ? { ...base, ...draft.value } : { ...base };
+  const canChangeAnchor = !existing || store.canChangeAnchor(existing);
+
+  let saving = false;
+  let dirty = restored;
+
+  /* ---------------- 下書き ---------------- */
+
+  const persistDraft = () => {
+    if (saving) return;
+    dirty = true;
+    if (isEmptyDraft(state)) clearDraft(key);
+    else saveDraft(key, state);
+    updateStatus();
+  };
+
+  const statusLine = h('span', { class: 'editor__status' });
+  function updateStatus(text) {
+    statusLine.textContent = text ?? (isEmptyDraft(state)
+      ? ''
+      : (dirty ? '書きかけを保存しました' : ''));
+  }
+
+  /* ---------------- 本文 ---------------- */
+
   const bodyInput = h('textarea', {
-    class: 'textarea',
-    placeholder: '覚えておきたいことを書きます。1 行目がタイトルとして使われます。',
+    class: 'textarea textarea--main',
+    placeholder: '思いついたことを、そのまま書いてください。',
     value: state.body,
-    onInput: (e) => { state.body = e.target.value; },
-  });
-
-  const cueInput = h('input', {
-    class: 'input',
-    type: 'text',
-    placeholder: '例）減価償却の3つの方法は？',
-    value: state.cue,
-    onInput: (e) => { state.cue = e.target.value; },
-  });
-
-  const titleInput = h('input', {
-    class: 'input',
-    type: 'text',
-    placeholder: '（省略すると本文の1行目）',
-    value: state.title,
-    onInput: (e) => { state.title = e.target.value; },
-  });
-
-  const tagsInput = h('input', {
-    class: 'input',
-    type: 'text',
-    placeholder: '英語 語彙 仕事（スペース区切り）',
-    value: state.tags,
-    onInput: (e) => { state.tags = e.target.value; },
-  });
-
-  const dateInput = h('input', {
-    class: 'input',
-    type: 'date',
-    value: state.anchorDate,
-    onChange: (e) => { state.anchorDate = e.target.value || todayKey(); renderSchedule(); },
-  });
-
-  const presetSelect = h('select', {
-    class: 'select',
-    onChange: (e) => {
-      state.presetId = e.target.value;
-      state.intervals = state.presetId === 'custom'
-        ? sanitizeIntervals(settings.customIntervals)
-        : [...getPreset(state.presetId).intervals];
-      renderSchedule();
+    rows: '8',
+    onInput: (e) => {
+      state.body = e.target.value;
+      autoGrow(e.target);
+      persistDraft();
     },
-  }, ...PRESETS.map((p) => h('option', { value: p.id, selected: p.id === state.presetId }, `${p.name}（${p.intervals.length}回）`)));
+  });
 
-  const scheduleBox = h('div', { class: 'card', style: { background: 'var(--fcc-surface-container)' } });
+  const optionalFields = h('div', { class: 'editor__optional' });
+  const addRow = h('div', { class: 'editor__add-row' });
+
+  const fieldDefs = [
+    {
+      id: 'cue',
+      label: '思い出すための手掛かり',
+      addLabel: '手掛かり',
+      iconName: 'eye',
+      placeholder: '例）減価償却の3つの方法は？',
+      hint: '復習ではこれだけが先に出ます。空欄ならタイトル（本文の1行目）が使われます。',
+    },
+    {
+      id: 'title',
+      label: 'タイトル',
+      addLabel: 'タイトル',
+      iconName: 'note',
+      placeholder: '（省略すると本文の1行目）',
+    },
+    {
+      id: 'tags',
+      label: 'タグ',
+      addLabel: 'タグ',
+      iconName: 'tag',
+      placeholder: '英語 語彙 仕事（スペース区切り）',
+      datalist: store.allTags().map(([tag]) => tag),
+    },
+  ];
+
+  const shown = new Set(fieldDefs.filter((f) => String(state[f.id] || '').trim()).map((f) => f.id));
+
+  function renderOptional() {
+    clear(optionalFields);
+    clear(addRow);
+    fieldDefs.forEach((def) => {
+      if (!shown.has(def.id)) {
+        addRow.appendChild(button(def.addLabel, {
+          className: 'chip',
+          icon: icon('plus', { size: 16 }),
+          onClick: () => { shown.add(def.id); renderOptional(); focusField(def.id); },
+        }));
+        return;
+      }
+      const input = h('input', {
+        class: 'input',
+        type: 'text',
+        id: `editor-${def.id}`,
+        placeholder: def.placeholder,
+        value: state[def.id] || '',
+        list: def.datalist?.length ? `list-${def.id}` : null,
+        onInput: (e) => { state[def.id] = e.target.value; persistDraft(); },
+      });
+      optionalFields.appendChild(h('label', { class: 'field' },
+        h('span', { class: 'field__label' }, def.label),
+        input,
+        def.datalist?.length
+          ? h('datalist', { id: `list-${def.id}` }, ...def.datalist.map((t) => h('option', { value: t })))
+          : null,
+        def.hint ? h('span', { class: 'field__hint' }, def.hint) : null));
+    });
+  }
+
+  function focusField(id) {
+    setTimeout(() => document.getElementById(`editor-${id}`)?.focus(), 30);
+  }
+
+  renderOptional();
+
+  /* ---------------- 復習の設定 ---------------- */
+
+  const scheduleBox = h('div', { class: 'editor__schedule' });
+  const scheduleSummary = h('span', { class: 'editor__schedule-summary' });
+
+  function currentIntervals() {
+    const baseList = state.presetId === 'none' ? [] : sanitizeIntervals(state.intervals);
+    return baseList.length ? spreadIntervals(baseList, state.seed, state.spread) : [];
+  }
 
   function renderSchedule() {
-    clear(scheduleBox);
     const preset = getPreset(state.presetId);
-    const base = sanitizeIntervals(state.intervals);
-    const intervals = spreadIntervals(base, state.seed, state.spread);
-    const spreadSelect = h('select', {
-      class: 'select',
-      style: { width: 'auto' },
-      'aria-label': '復習日の分散',
-      onChange: (e) => { state.spread = getSpread(e.target.value).ratio; renderSchedule(); },
-    }, ...SPREADS.map((sp) => h('option', {
-      value: sp.id,
-      selected: sp.id === spreadIdOf(state.spread),
-    }, sp.label)));
+    const intervals = currentIntervals();
+    scheduleSummary.textContent = intervals.length
+      ? `${preset.name}・${intervals.length}回・最長 ${formatDuration(intervals[intervals.length - 1])}後`
+      : '復習の予定を作りません';
 
-    const seedInput = h('input', {
-      class: 'input',
-      type: 'number',
-      min: '0',
-      max: '9999',
-      value: String(state.seed),
-      style: { width: '6em' },
-      'aria-label': '分散のシード',
-      onChange: (e) => { state.seed = Number(e.target.value) || 0; renderSchedule(); },
-    });
+    clear(scheduleBox);
+    scheduleBox.append(
+      h('div', { class: 'filter-row' },
+        ...PRESETS.map((p) => h('button', {
+          type: 'button',
+          class: 'chip',
+          'aria-pressed': String(p.id === state.presetId),
+          onClick: () => {
+            state.presetId = p.id;
+            state.intervals = p.id === 'custom'
+              ? sanitizeIntervals(settings.customIntervals)
+              : [...p.intervals];
+            persistDraft();
+            renderSchedule();
+          },
+        }, p.name))),
+      h('div', { class: 'field__hint', style: { margin: '10px 0' } }, preset.description),
+    );
+
+    if (!intervals.length) return;
 
     scheduleBox.append(
-      h('div', { class: 'card__title' }, '復習の予定'),
-      h('div', { class: 'card__desc' }, preset.description),
       curvePreview(intervals),
       h('div', { class: 'filter-row', style: { marginTop: '8px', flexWrap: 'wrap' } },
-        ...intervals.slice(0, 8).map((d) => h('span', { class: 'chip chip--static' },
+        ...intervals.slice(0, 6).map((d) => h('span', { class: 'chip chip--static' },
           `${formatDuration(d)}後 ${formatSmart(addDays(state.anchorDate, d))}`))),
-      intervals.length > 8 ? h('div', { class: 'field__hint' }, `ほか ${intervals.length - 8} 回`) : null,
       h('div', { class: 'field__hint' },
         `合計 ${intervals.length} 回・最後は ${formatDuration(intervals[intervals.length - 1])}後の `
         + `${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`),
-
-      h('div', { class: 'divider' }),
-      h('div', { class: 'spread-row' },
-        h('div', { style: { flex: '1', minWidth: '0' } },
-          h('div', { class: 'field__label', style: { marginBottom: '2px' } }, '復習日の分散'),
-          h('div', { class: 'field__hint' },
-            '同じ日に書いたメモの復習日が重ならないよう、先の予定ほど前後にずらします。')),
-        spreadSelect),
-      state.spread ? h('div', { class: 'spread-row', style: { marginTop: '8px' } },
-        h('div', { style: { flex: '1', minWidth: '0' } },
-          h('div', { class: 'field__label', style: { marginBottom: '2px' } }, 'シード'),
-          h('div', { class: 'field__hint' }, 'ずらし方を決める数字です。変えると先の予定が組み替わります。')),
-        seedInput,
-        iconButton(icon('dice', { size: 20 }), {
-          label: 'シードを振り直す',
-          className: 'icon-btn icon-btn--filled',
-          onClick: () => { state.seed = randomSeed(); renderSchedule(); },
-        })) : null,
+      h('details', { class: 'editor__details' },
+        h('summary', {}, '分散と起点日'),
+        h('div', { class: 'spread-row', style: { marginTop: '10px' } },
+          h('div', { style: { flex: '1', minWidth: '0' } },
+            h('div', { class: 'field__label', style: { marginBottom: '2px' } }, '復習日の分散'),
+            h('div', { class: 'field__hint' }, '同じ日に書いたメモと重ならないよう、先の予定ほどずらします。')),
+          h('select', {
+            class: 'select',
+            style: { width: 'auto' },
+            'aria-label': '復習日の分散',
+            onChange: (e) => { state.spread = getSpread(e.target.value).ratio; persistDraft(); renderSchedule(); },
+          }, ...SPREADS.map((sp) => h('option', {
+            value: sp.id, selected: sp.id === spreadIdOf(state.spread),
+          }, sp.label)))),
+        state.spread ? h('div', { class: 'spread-row', style: { marginTop: '10px' } },
+          h('div', { style: { flex: '1', minWidth: '0' } },
+            h('div', { class: 'field__label', style: { marginBottom: '2px' } }, 'シード'),
+            h('div', { class: 'field__hint' }, 'ずらし方を決める数字です。')),
+          h('input', {
+            class: 'input',
+            type: 'number',
+            min: '0',
+            max: '9999',
+            value: String(state.seed),
+            style: { width: '6em' },
+            'aria-label': '分散のシード',
+            onChange: (e) => { state.seed = Number(e.target.value) || 0; persistDraft(); renderSchedule(); },
+          }),
+          iconButton(icon('dice', { size: 20 }), {
+            label: 'シードを振り直す',
+            className: 'icon-btn icon-btn--filled',
+            onClick: () => { state.seed = randomSeed(); persistDraft(); renderSchedule(); },
+          })) : null,
+        h('label', { class: 'field', style: { marginTop: '12px', marginBottom: '0' } },
+          h('span', { class: 'field__label' }, '起点の日'),
+          canChangeAnchor
+            ? h('input', {
+              class: 'input',
+              type: 'date',
+              value: state.anchorDate,
+              onChange: (e) => {
+                state.anchorDate = e.target.value || todayKey();
+                persistDraft();
+                renderSchedule();
+              },
+            })
+            : h('div', {},
+              h('div', { class: 'input', style: { color: 'var(--fcc-on-surface-variant)' } },
+                formatLong(state.anchorDate)),
+              h('span', { class: 'field__hint' },
+                'すでに復習の記録があるため、起点日は変更できません。'
+                + '組み直したいときは「復習を今日からやり直す」を使ってください。')))),
     );
   }
   renderSchedule();
 
-  const content = h('div', {},
-    parent ? h('div', {
-      class: 'card',
-      style: { background: 'var(--fcc-tertiary-container)', color: 'var(--fcc-on-tertiary-container)' },
-    },
-    h('div', { class: 'card__title' },
+  /* ---------------- 組み立て ---------------- */
+
+  const restoredBanner = restored
+    ? h('div', { class: 'banner banner--info editor__restored' },
+      h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
+      h('span', { style: { flex: '1' } }, '書きかけを復元しました。'),
+      button('破棄', {
+        className: 'btn btn--text btn--sm',
+        onClick: () => {
+          clearDraft(key);
+          Object.assign(state, base);
+          bodyInput.value = state.body;
+          autoGrow(bodyInput);
+          shown.clear();
+          fieldDefs.filter((f) => String(state[f.id] || '').trim()).forEach((f) => shown.add(f.id));
+          renderOptional();
+          renderSchedule();
+          restoredBanner.remove();
+          dirty = false;
+          updateStatus('');
+        },
+      }))
+    : null;
+
+  const content = h('div', { class: 'editor' },
+    restoredBanner,
+    parent ? h('div', { class: 'editor__parent' },
       h('span', { html: icon('branch', { size: 18 }), style: { display: 'flex' } }),
-      '追加メモ'),
-    h('div', { style: { fontSize: '.82rem' } }, `「${displayTitle(parent)}」に紐付けて保存し、このメモ自身の忘却曲線を作ります。`)) : null,
+      h('span', {}, `「${displayTitle(parent)}」への追加メモ`)) : null,
+    bodyInput,
+    addRow,
+    optionalFields,
+    h('details', { class: 'editor__details editor__details--schedule' },
+      h('summary', {},
+        h('span', {}, '復習の設定'),
+        scheduleSummary),
+      scheduleBox));
 
-    h('label', { class: 'field' },
-      h('span', { class: 'field__label' }, '本文'),
-      bodyInput),
-
-    h('label', { class: 'field' },
-      h('span', { class: 'field__label' }, 'タイトル（任意）'),
-      titleInput),
-
-    h('label', { class: 'field' },
-      h('span', { class: 'field__label' }, '思い出すための手掛かり（任意）'),
-      cueInput,
-      h('span', { class: 'field__hint' },
-        '復習のときは、まずこれだけが表示されます。空欄ならタイトルが手掛かりになります。')),
-
-    h('label', { class: 'field' },
-      h('span', { class: 'field__label' }, 'タグ（任意）'),
-      tagsInput),
-
-    h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' } },
-      h('label', { class: 'field' },
-        h('span', { class: 'field__label' }, '起点の日'),
-        dateInput),
-      h('label', { class: 'field' },
-        h('span', { class: 'field__label' }, '忘却曲線'),
-        presetSelect)),
-
-    scheduleBox);
+  const errorBox = h('div', { class: 'editor__error', hidden: true });
+  content.append(errorBox, statusLine);
 
   const dialog = openDialog({
-    title: existing ? 'メモを編集' : parent ? '追加メモを書く' : '新しいメモ',
+    title: existing ? 'メモを編集' : parent ? '追加メモ' : '新しいメモ',
     content,
-    actions: [
-      { label: 'キャンセル', className: 'btn btn--text', onClick: (close) => close() },
-      {
-        label: '保存',
-        className: 'btn',
-        onClick: (close) => {
-          if (!state.body.trim() && !state.title.trim()) {
-            toast('本文かタイトルを入力してください');
-            return;
-          }
-          if (existing) {
-            store.updateNote(existing.id, {
-              title: state.title,
-              cue: state.cue,
-              body: state.body,
-              tags: state.tags,
-              presetId: state.presetId,
-              intervals: state.intervals,
-              spread: state.spread,
-              seed: state.seed,
-            });
-            toast('メモを更新しました');
-          } else {
-            const note = store.addNote({
-              title: state.title,
-              cue: state.cue,
-              body: state.body,
-              tags: state.tags,
-              anchorDate: state.anchorDate,
-              parentId: options.parentId || null,
-              presetId: state.presetId,
-              intervals: state.intervals,
-              spread: state.spread,
-              seed: state.seed,
-            });
-            const first = note.reviews[0];
-            toast(first ? `保存しました。次の復習は ${formatRelative(first.due)}` : '保存しました');
-          }
-          close();
-        },
+    leading: iconButton(icon('close'), {
+      label: '閉じる',
+      onClick: () => {
+        // 書きかけは下書きとして残す（消さない）
+        if (!isEmptyDraft(state) && dirty) toast('書きかけを保存しました。次に開くと続きから書けます。');
+        dialog.close();
       },
+    }),
+    actions: [
+      { label: 'キャンセル', className: 'btn btn--text', onClick: () => dialog.close() },
+      { label: '保存', className: 'btn', onClick: () => save() },
     ],
   });
 
-  setTimeout(() => bodyInput.focus({ preventScroll: true }), 60);
+  async function save() {
+    if (saving) return;
+    if (!state.body.trim() && !state.title.trim() && !state.cue.trim()) {
+      toast('本文を入力してください');
+      bodyInput.focus();
+      return;
+    }
+    saving = true;
+    errorBox.hidden = true;
+    updateStatus('保存しています…');
+
+    let note = existing;
+    if (existing) {
+      store.updateNote(existing.id, {
+        title: state.title,
+        cue: state.cue,
+        body: state.body,
+        tags: state.tags,
+        anchorDate: state.anchorDate,
+        presetId: state.presetId,
+        intervals: state.presetId === 'none' ? [] : state.intervals,
+        spread: state.spread,
+        seed: state.seed,
+      });
+      note = store.getNote(existing.id);
+    } else {
+      note = store.addNote({
+        title: state.title,
+        cue: state.cue,
+        body: state.body,
+        tags: state.tags,
+        anchorDate: state.anchorDate,
+        parentId: options.parentId || null,
+        presetId: state.presetId,
+        intervals: state.presetId === 'none' ? [] : state.intervals,
+        spread: state.spread,
+        seed: state.seed,
+      });
+    }
+
+    // 保存が終わるまで閉じない
+    const result = await store.flush();
+    saving = false;
+
+    if (!result.ok) {
+      updateStatus('');
+      errorBox.hidden = false;
+      clear(errorBox).append(
+        h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
+        h('span', { style: { flex: '1' } },
+          '保存できませんでした。本文は残っています。もう一度お試しいただくか、本文をコピーして保管してください。'),
+        button('再試行', { className: 'btn btn--sm', onClick: () => save() }),
+        button('本文をコピー', {
+          className: 'btn btn--text btn--sm',
+          onClick: async () => {
+            const { copyText } = await import('../core/exporter.js');
+            const ok = await copyText(state.body);
+            toast(ok ? 'コピーしました' : 'コピーできませんでした');
+          },
+        }),
+      );
+      return;
+    }
+
+    clearDraft(key);
+    dirty = false;
+    const next = note?.reviews.find((r) => r.status === 'pending');
+    if (existing) toast('保存しました');
+    else if (next) toast(`保存しました。次の復習は ${formatRelative(next.due)}`);
+    else toast('保存しました。復習の予定はまだありません。');
+    dialog.close();
+  }
+
+  setTimeout(() => {
+    bodyInput.focus({ preventScroll: true });
+    autoGrow(bodyInput);
+    const len = bodyInput.value.length;
+    bodyInput.setSelectionRange(len, len);
+  }, 60);
+
   return dialog;
 }
 
-/* ------------------------------------------------------------------ */
-/* 詳細表示                                                            */
-/* ------------------------------------------------------------------ */
-
+/** 入力に合わせて本文欄を伸ばす */
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight + 2, Math.max(240, window.innerHeight * 0.45))}px`;
+}
 export function openNoteDetail(store, noteId) {
   const render = () => {
     const note = store.getNote(noteId);
@@ -328,13 +493,17 @@ export function openNoteDetail(store, noteId) {
         `更新 ${formatDateTime(note.updatedAt)}`));
   };
 
-  const sheet = openSheet({ title: 'メモの詳細', content: render() });
-  const unsubscribe = store.subscribe(() => {
+  let unsubscribe = () => {};
+  const sheet = openSheet({
+    title: 'メモの詳細',
+    content: render(),
+    // 背景のタップや Esc で閉じたときも、必ず購読を解除する
+    onClose: () => unsubscribe(),
+  });
+  unsubscribe = store.subscribe(() => {
     if (!store.getNote(noteId)) { sheet.close(); return; }
     clear(sheet.body).appendChild(render());
   });
-  const origClose = sheet.close;
-  sheet.close = () => { unsubscribe(); origClose(); };
   return sheet;
 }
 

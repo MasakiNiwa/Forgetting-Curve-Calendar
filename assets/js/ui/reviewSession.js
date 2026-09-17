@@ -5,12 +5,13 @@
  *   手掛かりを見る → 頭の中で思い出す → 内容を開く → 想起結果を記録 → 次へ
  * 最後に「また忘れる頃に会いましょう」で締めることで、1 日の区切りを作る。
  */
-import { h, button, iconButton, clear } from './dom.js';
+import { h, append, button, iconButton, clear } from './dom.js';
 import { icon } from './icons.js';
 import { openDialog, toast } from './overlays.js';
 import { ratingButtons } from './components.js';
+import { openNoteEditor } from './editor.js';
 import { RATINGS } from '../core/curve.js';
-import { bodyPreview, recallCue } from '../core/models.js';
+import { recallCue } from '../core/models.js';
 import { formatRelative, formatSmart } from '../core/date.js';
 
 /**
@@ -64,10 +65,11 @@ export function startReviewSession(store, options = {}) {
     advance();
   }
 
-  function skip() {
+  /** 「また後で」= 飛ばすのではなく、近いうちにもう一度出す */
+  function later() {
     const { note, review } = current();
     if (note && review && review.status === 'pending') {
-      store.skipReview(note.id, review.id);
+      store.postponeReview(note.id, review.id, 3);
       results.skipped += 1;
     }
     advance();
@@ -77,21 +79,29 @@ export function startReviewSession(store, options = {}) {
     const { note, review } = current();
     if (!note || !review) { advance(); return; }
 
-    const text = note.cue ? note.body : bodyPreview(note);
+    // 答え合わせでは、省略せずに原文をそのまま出す
+    const text = (note.body || '').trim();
     const answer = h('div', { class: 'session__answer' });
     const actions = h('div', { class: 'session__actions' });
 
     const reveal = () => {
       revealed = true;
-      clear(answer).append(
+      append(clear(answer), [
         // 明示的なタイトルがあるときだけ見出しを添える（本文と重複させない）
         note.cue && note.title ? h('div', { class: 'session__answer-label' }, note.title) : null,
         h('p', { class: 'session__body' }, text || '（本文はありません）'),
-      );
-      clear(actions).append(
+      ]);
+      append(clear(actions), [
         h('p', { class: 'session__ask' }, '思い出せましたか？'),
         ratingButtons(record, { size: '' }),
-      );
+        // 読み返して気づいたことを、その場で残せるようにする
+        h('div', { class: 'session__extra' },
+          button('気づきを追記', {
+            className: 'btn btn--text btn--sm',
+            icon: icon('branch', { size: 16 }),
+            onClick: () => openNoteEditor(store, { parentId: note.id }),
+          })),
+      ]);
     };
 
     if (revealed) {
@@ -105,7 +115,7 @@ export function startReviewSession(store, options = {}) {
       }));
     }
 
-    clear(body).append(
+    append(clear(body), [
       h('div', { class: 'session__progress' },
         h('div', { class: 'session__bar' },
           h('span', { style: { width: `${(cursor / plan.length) * 100}%` } })),
@@ -118,8 +128,8 @@ export function startReviewSession(store, options = {}) {
       answer,
       actions,
       h('div', { class: 'session__footer' },
-        button('この回は飛ばす', { className: 'btn btn--text btn--sm', onClick: skip })),
-    );
+        button('また後で（3日後に）', { className: 'btn btn--text btn--sm', onClick: later })),
+    ]);
   }
 
   function finish({ aborted }) {
@@ -128,7 +138,7 @@ export function startReviewSession(store, options = {}) {
       dialog.close();
       return;
     }
-    clear(body).append(
+    append(clear(body), [
       h('div', { class: 'session__done' },
         h('div', { class: 'session__done-icon', html: icon('sparkle', { size: 48 }) }),
         h('h2', { class: 'session__done-title' }, aborted ? `${done} 件まで進みました` : '今日の復習、おつかれさまでした'),
@@ -136,10 +146,10 @@ export function startReviewSession(store, options = {}) {
           summaryItem(RATINGS.known.label, results.known, 'var(--fcc-rating-known)'),
           summaryItem(RATINGS.vague.label, results.vague, 'var(--fcc-rating-vague)'),
           summaryItem(RATINGS.forgot.label, results.forgot, 'var(--fcc-rating-forgot)')),
-        results.skipped ? h('p', { class: 'field__hint' }, `${results.skipped} 件を飛ばしました`) : null,
+        results.skipped ? h('p', { class: 'field__hint' }, `${results.skipped} 件は 3 日後にまた出ます`) : null,
         h('p', { class: 'session__closing' }, 'また忘れる頃に会いましょう。'),
         button('閉じる', { className: 'btn btn--block', onClick: () => dialog.close() })),
-    );
+    ]);
   }
 
   render();

@@ -31,12 +31,34 @@ export function renderStats(store) {
 
   /* ---------------- 主要な数字 ---------------- */
   const streak = store.streakDays(today);
+  const week = store.recentActivity(7, today);
   root.appendChild(h('section', { class: 'card' },
     h('div', { class: 'stat-grid' },
-      stat(streak, '連続日数', streak ? `${streak}日続いています` : null),
+      stat(streak, '連続日数', '書いた日も数えます'),
       stat(st.reviewsDone, '思い出した回数'),
-      stat(st.graduated, '定着したメモ'),
-      stat(st.overdue, '思い出し待ち'))));
+      stat(week.written, '今週書いたメモ'),
+      stat(st.graduated, '定着したメモ')),
+    week.insights ? h('div', { class: 'field__hint', style: { marginTop: '10px' } },
+      `そのうち ${week.insights} 件は、読み返して生まれた気づきです。`) : null));
+
+  /* ---------------- 節目 ---------------- */
+  const { achieved, next } = store.milestones(today);
+  root.appendChild(h('section', { class: 'card' },
+    h('div', { class: 'card__title' },
+      h('span', { html: icon('flag', { size: 18 }), style: { display: 'flex' } }), 'これまでの節目'),
+    achieved.length
+      ? h('div', { class: 'milestones' },
+        ...achieved.slice().reverse().map((m) => h('div', { class: 'milestone' },
+          h('span', { class: 'milestone__icon', html: icon(m.icon, { size: 18 }) }),
+          h('span', {},
+            h('span', { class: 'milestone__label' }, m.label),
+            m.desc ? h('span', { class: 'milestone__desc' }, m.desc) : null))))
+      : h('div', { class: 'field__hint' }, 'メモを書くと、ここに節目がたまっていきます。'),
+    next ? h('div', { class: 'milestone milestone--next' },
+      h('span', { class: 'milestone__icon', html: icon(next.icon, { size: 18 }) }),
+      h('span', {},
+        h('span', { class: 'milestone__label' }, `次の節目：${next.label}`),
+        next.desc ? h('span', { class: 'milestone__desc' }, next.desc) : null)) : null));
 
   /* ---------------- 想起の内訳 ---------------- */
   const bar = ratingBar(st.ratings, RATING_ORDER);

@@ -40,6 +40,12 @@ export const PRESETS = [
     intervals: [1, 3, 7, 21, 60, 180, 365, 730, 1460, 2920, 5840, 10950],
   },
   {
+    id: 'none',
+    name: 'あとで決める',
+    description: '復習の予定を作らずに保存します。あとから「復習を始める」でいつでも設定できます。',
+    intervals: [],
+  },
+  {
     id: 'custom',
     name: 'カスタム',
     description: '自分で間隔を決めます。年単位の間隔も設定できます。',
@@ -161,10 +167,16 @@ export function getPreset(presetId) {
 
 /** 設定からプリセットの実効間隔を取り出す（custom は設定側の値を使う） */
 export function resolveIntervals(presetId, settings = {}) {
+  if (presetId === 'none') return [];
   if (presetId === 'custom') {
     return sanitizeIntervals(settings.customIntervals || getPreset('custom').intervals);
   }
   return [...getPreset(presetId).intervals];
+}
+
+/** 復習を設定していないメモか */
+export function isInbox(note) {
+  return !note.reviews.length && !note.events.some((e) => e.type === 'rate' || e.type === 'skip');
 }
 
 /** 正の整数・昇順・重複なしに整える */
@@ -235,10 +247,13 @@ export function replay(note, { adaptive = true } = {}) {
 
   let seed = sanitizeSeed(note.origin?.seed);
   let spread = Number(note.origin?.spread) || 0;
-  let intervals = spreadIntervals(note.origin?.intervals, seed, spread);
+  // 間隔が空 = 「あとで決める」。復習予定を作らない
+  let intervals = (note.origin?.intervals || []).length
+    ? spreadIntervals(note.origin.intervals, seed, spread)
+    : [];
   let presetId = note.origin?.presetId || DEFAULT_PRESET_ID;
   let ease = EASE_DEFAULT;
-  let reviews = buildSchedule(note.anchorDate, intervals, makeKey);
+  let reviews = intervals.length ? buildSchedule(note.anchorDate, intervals, makeKey) : [];
 
   // 出来事は記録された順（因果の順）にそのまま再生する
   const events = (note.events || []).filter((e) => e && EVENT_TYPES.includes(e.type));
@@ -309,6 +324,8 @@ export function replay(note, { adaptive = true } = {}) {
       case 'restart': {
         reviews = reviews.filter((r) => r.status !== 'pending');
         ease = EASE_DEFAULT;
+        if (ev.intervals?.length) intervals = spreadIntervals(ev.intervals, seed, spread);
+        if (ev.presetId) presetId = ev.presetId;
         buildSchedule(ev.day, intervals, makeKey).forEach((r) => reviews.push(r));
         break;
       }
@@ -316,7 +333,7 @@ export function replay(note, { adaptive = true } = {}) {
       case 'reschedule': {
         if (ev.seed !== undefined) seed = sanitizeSeed(ev.seed);
         if (ev.spread !== undefined) spread = Number(ev.spread) || 0;
-        intervals = spreadIntervals(ev.intervals, seed, spread);
+        intervals = (ev.intervals || []).length ? spreadIntervals(ev.intervals, seed, spread) : [];
         presetId = ev.presetId || presetId;
         const doneSteps = reviews.filter((r) => r.status !== 'pending').map((r) => r.step);
         const maxDone = doneSteps.length ? Math.max(...doneSteps) : -1;
@@ -333,7 +350,9 @@ export function replay(note, { adaptive = true } = {}) {
   });
 
   reviews.sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : a.step - b.step));
-  const status = reviews.some((r) => r.status === 'pending') ? 'active' : 'graduated';
+  const status = reviews.some((r) => r.status === 'pending')
+    ? 'active'
+    : (reviews.length ? 'graduated' : 'inbox');
   return { reviews, ease, intervals, presetId, status, seed, spread };
 }
 
