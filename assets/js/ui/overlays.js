@@ -166,6 +166,11 @@ export function confirmDialog({
   });
 }
 
+/** 開いているダイアログ・シートをすべて閉じる（画面遷移の前に呼ぶ） */
+export function closeAllOverlays() {
+  [...openStack].reverse().forEach((entry) => closeOverlay(entry));
+}
+
 /** 選択肢メニュー（ボトムシート形式） */
 export function openMenu({ title, items }) {
   const list = h('div', { class: 'menu' });

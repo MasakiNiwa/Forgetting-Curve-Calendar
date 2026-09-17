@@ -38,8 +38,11 @@ export function renderStats(store) {
       stat(st.reviewsDone, '思い出した回数'),
       stat(week.written, '今週書いたメモ'),
       stat(st.graduated, '定着したメモ')),
-    week.insights ? h('div', { class: 'field__hint', style: { marginTop: '10px' } },
-      `そのうち ${week.insights} 件は、読み返して生まれた気づきです。`) : null));
+    h('div', { class: 'field__hint', style: { marginTop: '10px' } },
+      [
+        week.insights ? `そのうち ${week.insights} 件は、読み返して生まれた気づきです。` : null,
+        week.edited ? `ほかに ${week.edited} 件のメモを書き足しました。` : null,
+      ].filter(Boolean).join(' ') || '書いた日も連続日数に数えます。')));
 
   /* ---------------- 節目 ---------------- */
   const { achieved, next } = store.milestones(today);

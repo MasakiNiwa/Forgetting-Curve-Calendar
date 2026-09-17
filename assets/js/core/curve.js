@@ -135,14 +135,18 @@ export function spreadIntervals(intervals, seed = 0, ratio = 0) {
 
 /**
  * いま有効な「分散前」の間隔。
- * 途中で曲線を変えている場合は、最後の reschedule の値が基準になる。
+ * 途中で曲線を変えている場合は、最後に指定された値が基準になる。
+ * 「予定なし」は空配列で返す（[1,3,7] などで埋めない）。
  */
 export function baseIntervalsOf(note) {
   for (let i = (note.events || []).length - 1; i >= 0; i -= 1) {
     const ev = note.events[i];
-    if (ev.type === 'reschedule' && Array.isArray(ev.intervals)) return sanitizeIntervals(ev.intervals);
+    if ((ev.type === 'reschedule' || ev.type === 'restart') && Array.isArray(ev.intervals)) {
+      return ev.intervals.length ? sanitizeIntervals(ev.intervals) : [];
+    }
   }
-  return sanitizeIntervals(note.origin?.intervals);
+  const origin = note.origin?.intervals || [];
+  return origin.length ? sanitizeIntervals(origin) : [];
 }
 
 /** メモの実効間隔（プリセット + 分散） */
@@ -248,9 +252,11 @@ export function replay(note, { adaptive = true } = {}) {
   let seed = sanitizeSeed(note.origin?.seed);
   let spread = Number(note.origin?.spread) || 0;
   // 間隔が空 = 「あとで決める」。復習予定を作らない
-  let intervals = (note.origin?.intervals || []).length
-    ? spreadIntervals(note.origin.intervals, seed, spread)
-    : [];
+  // 素の間隔（プリセットの値）と、分散をかけた実効間隔を分けて持ち回る
+  let baseIntervals = [...(note.origin?.intervals || [])];
+  let intervals = baseIntervals.length ? spreadIntervals(baseIntervals, seed, spread) : [];
+  /** この日までは、このメモを今日のキューに出さない */
+  let snoozedUntil = '';
   let presetId = note.origin?.presetId || DEFAULT_PRESET_ID;
   let ease = EASE_DEFAULT;
   let reviews = intervals.length ? buildSchedule(note.anchorDate, intervals, makeKey) : [];
@@ -318,13 +324,19 @@ export function replay(note, { adaptive = true } = {}) {
         const target = resolve(ev);
         if (!target || target.status !== 'pending' || !ev.due) break;
         target.due = ev.due;
+        // 「また後で」と言ったのに、同じメモの別の回が今日に出ないようにする
+        if (ev.due > snoozedUntil) snoozedUntil = ev.due;
         break;
       }
 
       case 'restart': {
         reviews = reviews.filter((r) => r.status !== 'pending');
         ease = EASE_DEFAULT;
-        if (ev.intervals?.length) intervals = spreadIntervals(ev.intervals, seed, spread);
+        // intervals 未指定 = そのときの設定を引き継ぐ / 空配列 = 予定を作らない
+        if (ev.intervals !== undefined) {
+          baseIntervals = [...ev.intervals];
+          intervals = baseIntervals.length ? spreadIntervals(baseIntervals, seed, spread) : [];
+        }
         if (ev.presetId) presetId = ev.presetId;
         buildSchedule(ev.day, intervals, makeKey).forEach((r) => reviews.push(r));
         break;
@@ -333,7 +345,8 @@ export function replay(note, { adaptive = true } = {}) {
       case 'reschedule': {
         if (ev.seed !== undefined) seed = sanitizeSeed(ev.seed);
         if (ev.spread !== undefined) spread = Number(ev.spread) || 0;
-        intervals = (ev.intervals || []).length ? spreadIntervals(ev.intervals, seed, spread) : [];
+        if (ev.intervals !== undefined) baseIntervals = [...ev.intervals];
+        intervals = baseIntervals.length ? spreadIntervals(baseIntervals, seed, spread) : [];
         presetId = ev.presetId || presetId;
         const doneSteps = reviews.filter((r) => r.status !== 'pending').map((r) => r.step);
         const maxDone = doneSteps.length ? Math.max(...doneSteps) : -1;
@@ -353,7 +366,7 @@ export function replay(note, { adaptive = true } = {}) {
   const status = reviews.some((r) => r.status === 'pending')
     ? 'active'
     : (reviews.length ? 'graduated' : 'inbox');
-  return { reviews, ease, intervals, presetId, status, seed, spread };
+  return { reviews, ease, intervals, baseIntervals, presetId, status, seed, spread, snoozedUntil };
 }
 
 /**
@@ -364,6 +377,7 @@ export function refreshNote(note, options = {}) {
   const result = replay(note, options);
   note.reviews = result.reviews;
   note.schedule = {
+    baseIntervals: result.baseIntervals,
     presetId: result.presetId,
     intervals: result.intervals,   // 分散を反映した実際の間隔
     ease: result.ease,
@@ -371,6 +385,7 @@ export function refreshNote(note, options = {}) {
     spread: result.spread,
     adaptive: options.adaptive !== false,
   };
+  note.snoozedUntil = result.snoozedUntil || '';
   if (note.status !== 'archived') note.status = result.status;
   return note;
 }

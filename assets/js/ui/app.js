@@ -8,7 +8,8 @@ import { renderNotes } from './views/notes.js';
 import { renderStats } from './views/stats.js';
 import { renderSettings } from './views/settings.js';
 import { renderHelp } from './views/help.js';
-import { currentRoute, navigate, startRouter } from './router.js';
+import { currentRoute, navigate, parseHash, startRouter } from './router.js';
+import { renderNoteEditor, disposeNoteEditor } from './views/noteEditor.js';
 import { APP_NAME, APP_TAGLINE } from '../core/config.js';
 import { todayKey } from '../core/date.js';
 
@@ -76,6 +77,25 @@ export function mountApp(store, root) {
   }
 
   function render() {
+    const { segments, params } = parseHash();
+
+    // メモ編集は全画面（アプリ内の表示領域すべて）を使う
+    if (segments[0] === 'note') {
+      document.documentElement.dataset.mode = 'editor';
+      clear(main).appendChild(renderNoteEditor(store, {
+        noteId: segments[1],
+        parentId: params.get('parent') || null,
+        anchorDate: params.get('date') || null,
+        returnTo: params.get('from') || 'notes',
+      }));
+      main.scrollTop = 0;
+      document.title = `メモ｜${APP_NAME}`;
+      return;
+    }
+
+    disposeNoteEditor();
+    delete document.documentElement.dataset.mode;
+
     route = currentRoute(ROUTES, 'calendar');
     const def = ROUTES.find((r) => r.id === route) || ROUTES[0];
     navItems.forEach((el, id) => {
@@ -90,6 +110,8 @@ export function mountApp(store, root) {
 
   store.subscribe((event) => {
     if (event?.type === 'error') toast(event.message);
+    // 編集画面は自分で描画を持っているので、保存のたびに作り直さない
+    if (document.documentElement.dataset.mode === 'editor') return;
     render();
   });
 

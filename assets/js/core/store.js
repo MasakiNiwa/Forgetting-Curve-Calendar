@@ -9,15 +9,64 @@
 import { APP_VERSION } from './config.js';
 import { addDays, diffDays, fromKey as fromKeyLocal, todayKey } from './date.js';
 import {
-  baseIntervalsOf, createEvent, isOverdue, nextReview, refreshNote, resolveIntervals,
-  sanitizeIntervals, sanitizeSeed,
+  baseIntervalsOf, createEvent, isOverdue, localDayOf, nextReview, refreshNote,
+  resolveIntervals, sanitizeIntervals, sanitizeSeed,
 } from './curve.js';
 import {
   createEmptyData, createNote, makeEventId, normalizeData, normalizeNote,
-  normalizeSettings, normalizeTags,
+  normalizeSettings, normalizeTags, normalizeTombstones,
 } from './models.js';
 import { migrate } from './migrations.js';
 import { createDefaultAdapter } from './storage.js';
+
+/**
+ * 同じメモの 2 つの版を統合する。
+ * 出来事は和集合、中身は新しい方。食い違った古い中身は conflicts に退避する。
+ */
+function mergeNote(ours, theirs) {
+  const seen = new Set(ours.events.map((e) => e.id));
+  const extraEvents = theirs.events.filter((e) => !seen.has(e.id));
+  const events = [...ours.events, ...extraEvents]
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+
+  const ourStamp = ours.contentUpdatedAt || ours.updatedAt;
+  const theirStamp = theirs.contentUpdatedAt || theirs.updatedAt;
+  const theirContentNewer = theirStamp > ourStamp;
+  const contentDiffers = ours.body !== theirs.body
+    || ours.title !== theirs.title
+    || ours.cue !== theirs.cue
+    || ours.tags.join(',') !== theirs.tags.join(',');
+
+  const winner = theirContentNewer ? theirs : ours;
+  const loser = theirContentNewer ? ours : theirs;
+  const conflicted = contentDiffers && ours.body !== theirs.body;
+
+  const note = {
+    ...ours,
+    title: winner.title,
+    cue: winner.cue,
+    body: winner.body,
+    tags: [...winner.tags],
+    color: winner.color,
+    anchorDate: winner.anchorDate,
+    origin: { ...winner.origin },
+    status: ours.status === 'archived' || theirs.status === 'archived' ? 'archived' : ours.status,
+    contentUpdatedAt: theirContentNewer ? theirStamp : ourStamp,
+    updatedAt: theirs.updatedAt > ours.updatedAt ? theirs.updatedAt : ours.updatedAt,
+    events,
+    conflicts: [...(ours.conflicts || [])],
+  };
+
+  if (conflicted) {
+    const already = note.conflicts.some((c) => c.body === loser.body);
+    if (!already) {
+      note.conflicts = [{ at: new Date().toISOString(), body: loser.body }, ...note.conflicts].slice(0, 5);
+    }
+  }
+
+  const changed = extraEvents.length > 0 || theirContentNewer || conflicted;
+  return { note, changed, conflicted };
+}
 
 /** 保存ごとの固有の印。どのタブが書いた内容かを見分けるために使う。 */
 function makeSaveToken() {
@@ -52,43 +101,66 @@ export class Store {
 
   /**
    * 別のタブが保存した内容を取り込む。
-   * 同じ id のメモは「更新が新しい方」を残し、片方にしかないメモは両方残す。
-   * どちらのタブで書いたメモも失わないことを優先する。
+   *
+   * メモを丸ごと入れ替えると、片方の本文か片方の復習記録が消える。
+   * そこで「本文などの中身」と「復習の出来事」を別々に統合する。
+   *   - 出来事: id の和集合（記録は足し算で失われない）
+   *   - 中身  : contentUpdatedAt が新しい方を採用し、
+   *             食い違った古い方は conflicts に退避して本人に見せる
+   *   - 削除  : 墓標（deleted）を見て、古いタブの保存で復活させない
    */
   async reconcile() {
     const raw = await this.adapter.load();
-    if (!raw) return { changed: false, added: 0, updated: 0 };
+    if (!raw) return { changed: false, added: 0, updated: 0, conflicts: 0 };
     const token = raw?.meta?.saveToken ?? null;
-    if (token !== null && token === this.syncedToken) return { changed: false, added: 0, updated: 0 };
+    if (token !== null && token === this.syncedToken) {
+      return { changed: false, added: 0, updated: 0, conflicts: 0 };
+    }
     const incoming = normalizeData(migrate(raw));
 
+    const tombstones = { ...normalizeTombstones(this.data.deleted), ...incoming.deleted };
     const mine = new Map(this.data.notes.map((n) => [n.id, n]));
     let added = 0;
     let updated = 0;
+    let conflicts = 0;
+
     incoming.notes.forEach((theirs) => {
       const ours = mine.get(theirs.id);
       if (!ours) {
+        // こちらで消したメモは、相手の古い保存では復活させない
+        const tomb = tombstones[theirs.id];
+        if (tomb && tomb >= theirs.updatedAt) return;
         mine.set(theirs.id, theirs);
         added += 1;
         return;
       }
-      // 出来事の数が多い方／更新が新しい方を採用する
-      const theirsNewer = theirs.events.length > ours.events.length
-        || (theirs.events.length === ours.events.length && theirs.updatedAt > ours.updatedAt);
-      if (theirsNewer) {
-        mine.set(theirs.id, theirs);
+      const result = mergeNote(ours, theirs);
+      if (result.changed) updated += 1;
+      if (result.conflicted) conflicts += 1;
+      mine.set(theirs.id, result.note);
+    });
+
+    // 相手が消したメモは、こちらでも消す（こちらの方が新しい編集なら残す）
+    Object.entries(incoming.deleted || {}).forEach(([id, at]) => {
+      const ours = mine.get(id);
+      if (ours && at >= (ours.contentUpdatedAt || ours.updatedAt)) {
+        mine.delete(id);
         updated += 1;
       }
     });
 
-    const changed = added > 0 || updated > 0;
+    const nextNotes = [...mine.values()];
+    const changed = added > 0 || updated > 0
+      || nextNotes.length !== this.data.notes.length;
+    this.data.deleted = tombstones;
     if (changed) {
-      this.data.notes = [...mine.values()];
+      this.data.notes = nextNotes;
+      this.data.notes.forEach((n) => this.refresh(n));
       this._index = null;
     }
     this.syncedToken = token;
-    if (changed) this.emit({ type: 'data:reconciled', added, updated });
-    return { changed, added, updated };
+    if (changed) this.emit({ type: 'data:reconciled', added, updated, conflicts });
+    return { changed, added, updated, conflicts };
   }
 
   /** アダプタを差し替える（将来の同期実装用） */
@@ -240,6 +312,8 @@ export class Store {
     const items = [];
     this.data.notes.forEach((note) => {
       if (note.status === 'archived') return;
+      // 「また後で」と言われたメモは、その日まで出さない
+      if (note.snoozedUntil && note.snoozedUntil > base) return;
       const overdue = note.reviews.filter((review) => isOverdue(review, base));
       if (!overdue.length) return;
       const picked = perNote ? [overdue[0]] : overdue;
@@ -266,7 +340,9 @@ export class Store {
     // 同じメモが「期限切れ」と「今日」の両方に出ないようにする
     const seen = new Set(overdue.map((i) => i.note.id));
     const due = this.dayBucket(base).reviews
-      .filter((r) => r.review.status === 'pending' && !seen.has(r.note.id));
+      .filter((r) => r.review.status === 'pending'
+        && !seen.has(r.note.id)
+        && !(r.note.snoozedUntil && r.note.snoozedUntil > base));
 
     return {
       overdue,
@@ -301,8 +377,10 @@ export class Store {
       return { overdue: [], waiting: 0, reviews: bucket.reviews, created: bucket.created };
     }
     const queue = this.todayQueue(today);
-    const queued = new Set(queue.due.map((i) => i.review.id));
-    const rest = bucket.reviews.filter((r) => r.review.status !== 'pending' || queued.has(r.review.id));
+    // 復習 ID はメモごとの連番なので、メモ ID と組にして識別する
+    const queued = new Set(queue.due.map((i) => `${i.note.id}:${i.review.id}`));
+    const rest = bucket.reviews.filter((r) => r.review.status !== 'pending'
+      || queued.has(`${r.note.id}:${r.review.id}`));
     return {
       overdue: queue.overdue,
       waiting: queue.waiting,
@@ -358,13 +436,17 @@ export class Store {
   }
 
   /**
-   * このアプリに触れた日（書いた日・思い出した日）の集合。
-   * 「復習が無い日に連続記録が切れる」のを避けるため、書いた日も数える。
+   * このアプリに触れた日の集合。
+   *
+   * 「書いた日」は復習の起点日ではなく、実際に手を動かした日で数える。
+   * （過去の日付を起点にして今日書いた場合も、活動は今日）
+   * 既存メモを今日書き足した場合も、その日を活動として数える。
    */
   touchedDays() {
     const days = new Set();
     this.data.notes.forEach((note) => {
-      days.add(note.anchorDate);
+      days.add(localDayOf(note.createdAt));
+      if (note.contentUpdatedAt) days.add(localDayOf(note.contentUpdatedAt));
       note.events.forEach((ev) => {
         if (ev.type === 'rate' || ev.type === 'skip') days.add(ev.day);
       });
@@ -410,12 +492,19 @@ export class Store {
     return buckets;
   }
 
-  /** 直近 n 日で書いたメモ・生まれた気づき */
+  /** 直近 n 日で書いたメモ・育てたメモ・生まれた気づき */
   recentActivity(days = 7, base = todayKey()) {
     const from = addDays(base, -(days - 1));
-    const written = this.data.notes.filter((n) => n.anchorDate >= from && n.anchorDate <= base);
+    const inRange = (iso) => {
+      if (!iso) return false;
+      const day = localDayOf(iso);
+      return day >= from && day <= base;
+    };
+    const written = this.data.notes.filter((n) => inRange(n.createdAt));
+    const edited = this.data.notes.filter((n) => !inRange(n.createdAt) && inRange(n.contentUpdatedAt));
     return {
       written: written.length,
+      edited: edited.length,
       insights: written.filter((n) => n.parentId).length,
       reviewed: this.data.notes.reduce((acc, n) => acc + n.events.filter(
         (e) => e.type === 'rate' && e.day >= from && e.day <= base,
@@ -495,17 +584,29 @@ export class Store {
     if (patch.anchorDate && patch.anchorDate !== note.anchorDate && this.canChangeAnchor(note)) {
       note.anchorDate = patch.anchorDate;
     }
-    if (patch.title !== undefined) note.title = String(patch.title).trim();
-    if (patch.cue !== undefined) note.cue = String(patch.cue).trim();
-    if (patch.body !== undefined) note.body = String(patch.body).trim();
-    if (patch.tags !== undefined) note.tags = normalizeTags(patch.tags);
-    if (patch.color !== undefined) note.color = patch.color || null;
+    // 中身の変更だけ contentUpdatedAt を進める（復習の記録とは別に扱う）
+    let contentChanged = false;
+    const setField = (key, value) => {
+      if (note[key] === value) return;
+      note[key] = value;
+      contentChanged = true;
+    };
+    if (patch.title !== undefined) setField('title', String(patch.title).trim());
+    if (patch.cue !== undefined) setField('cue', String(patch.cue).trim());
+    // 本文は前後の空白・改行を勝手に削らない（書いたとおりに残す）
+    if (patch.body !== undefined) setField('body', String(patch.body));
+    if (patch.tags !== undefined) {
+      const tags = normalizeTags(patch.tags);
+      if (tags.join(',') !== note.tags.join(',')) { note.tags = tags; contentChanged = true; }
+    }
+    if (patch.color !== undefined) setField('color', patch.color || null);
 
     // 曲線に関わる変更（プリセット・間隔・分散・シード）は reschedule として記録する
     const presetId = patch.presetId || note.schedule.presetId;
     const baseIntervals = baseIntervalsOf(note);
-    const intervals = patch.intervals
-      ? sanitizeIntervals(patch.intervals)
+    // 「予定なし」は空配列。未指定（キーなし）と区別する
+    const intervals = Array.isArray(patch.intervals)
+      ? (patch.intervals.length ? sanitizeIntervals(patch.intervals) : [])
       : (patch.presetId && patch.presetId !== note.schedule.presetId
         ? resolveIntervals(presetId, this.settings)
         : baseIntervals);
@@ -520,9 +621,11 @@ export class Store {
     if (changed) {
       this.appendEvent(note, 'reschedule', { presetId, intervals, seed, spread }, { silent: true });
     }
-    note.updatedAt = new Date().toISOString();
+    const now = new Date().toISOString();
+    note.updatedAt = now;
+    if (contentChanged) note.contentUpdatedAt = now;
     this.refresh(note);
-    this.commit({ type: 'note:update', noteId: id });
+    this.commit({ type: 'note:update', noteId: id, contentChanged });
     return note;
   }
 
@@ -537,13 +640,18 @@ export class Store {
       .map((n) => JSON.parse(JSON.stringify(n)));
     this.data.notes = this.data.notes.filter((n) => !removed.includes(n.id));
     if (!withChildren) this.data.notes.forEach((n) => { if (n.parentId === id) n.parentId = null; });
+    // 墓標を残し、別タブの古い保存で復活しないようにする
+    const at = new Date().toISOString();
+    if (!this.data.deleted) this.data.deleted = {};
+    removed.forEach((noteId) => { this.data.deleted[noteId] = at; });
     this.commit({ type: 'note:delete', noteId: id });
     return removedNotes;
   }
 
-  /** deleteNote の取り消し用 */
+  /** deleteNote の取り消し用（明示的な復元なので墓標を外す） */
   restoreNotes(notes) {
     notes.map((n) => normalizeNote(n, this.settings)).filter(Boolean).forEach((n) => {
+      if (this.data.deleted) delete this.data.deleted[n.id];
       if (!this.getNote(n.id)) this.data.notes.push(n);
     });
     this.commit({ type: 'note:restore' });
