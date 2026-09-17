@@ -42,6 +42,10 @@ export function toMarkdown(notes, { store } = {}) {
   notes.forEach((note) => {
     lines.push(`## ${displayTitle(note)}`);
     lines.push('');
+    if (note.cue) {
+      lines.push(`**手掛かり:** ${note.cue}`);
+      lines.push('');
+    }
     const meta = [`作成: ${note.anchorDate}`];
     if (note.tags.length) meta.push(`タグ: ${note.tags.map((t) => `#${t}`).join(' ')}`);
     if (note.parentId && store) {
@@ -67,6 +71,7 @@ export function toText(notes) {
   notes.forEach((note) => {
     out.push(`■ ${displayTitle(note)}`);
     out.push(`  作成 ${note.anchorDate}${note.tags.length ? `  タグ ${note.tags.join(', ')}` : ''}`);
+    if (note.cue) out.push(`  手掛かり: ${note.cue}`);
     if (note.body) {
       out.push('');
       note.body.split('\n').forEach((l) => out.push(`  ${l}`));
@@ -82,7 +87,7 @@ export function toText(notes) {
 
 export function toCsv(notes) {
   const header = [
-    'id', 'parentId', 'title', 'body', 'tags', 'anchorDate', 'createdAt', 'status',
+    'id', 'parentId', 'title', 'cue', 'body', 'tags', 'anchorDate', 'createdAt', 'status',
     'preset', 'intervals', 'ease', 'reviewsDone', 'reviewsTotal', 'nextDue', 'lastRating',
   ];
   const rows = notes.map((note) => {
@@ -93,6 +98,7 @@ export function toCsv(notes) {
       note.id,
       note.parentId || '',
       displayTitle(note),
+      note.cue || '',
       note.body,
       note.tags.join(' '),
       note.anchorDate,

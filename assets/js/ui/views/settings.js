@@ -4,10 +4,10 @@ import { icon } from '../icons.js';
 import { curvePreview } from '../components.js';
 import { confirmDialog, toast, openDialog } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
-import { PRESETS, getPreset, sanitizeIntervals } from '../../core/curve.js';
+import { PRESETS, getPreset, sanitizeIntervals, MAX_INTERVAL_DAYS } from '../../core/curve.js';
 import { FORMATS, buildFilename, downloadText, readFileAsText, serializeBackup } from '../../core/exporter.js';
 import { APP_VERSION } from '../../core/config.js';
-import { formatDateTime } from '../../core/date.js';
+import { formatDateTime, formatDuration } from '../../core/date.js';
 
 const THEMES = [
   { id: 'system', label: '端末に合わせる', iconName: 'auto' },
@@ -15,28 +15,28 @@ const THEMES = [
   { id: 'dark', label: 'ダーク', iconName: 'dark' },
 ];
 
+const OVERDUE_LIMITS = [5, 10, 20, 50, 0];
+
 export function renderSettings(store) {
   const s = store.settings;
   const root = h('div', { class: 'page page--narrow' });
 
   root.appendChild(h('div', { class: 'page__header' },
     h('h1', { class: 'page__title' }, '設定'),
-    h('div', { class: 'page__subtitle' }, '表示・忘却曲線・データの管理')));
+    h('div', { class: 'page__subtitle' }, '表示・忘却曲線・復習・データの管理')));
 
   /* ---------------- 表示 ---------------- */
-  const themeRow = h('div', { class: 'filter-row' },
-    ...THEMES.map((t) => h('button', {
-      type: 'button',
-      class: 'chip',
-      'aria-pressed': String(s.theme === t.id),
-      onClick: () => store.updateSettings({ theme: t.id }),
-    }, h('span', { html: icon(t.iconName, { size: 16 }), style: { display: 'flex' } }), t.label)));
-
   root.appendChild(h('section', { class: 'card' },
     h('div', { class: 'card__title' },
       h('span', { html: icon('light', { size: 18 }), style: { display: 'flex' } }), '表示'),
     h('div', { class: 'card__desc' }, 'テーマと週の始まりを選べます。'),
-    themeRow,
+    h('div', { class: 'filter-row' },
+      ...THEMES.map((t) => h('button', {
+        type: 'button',
+        class: 'chip',
+        'aria-pressed': String(s.theme === t.id),
+        onClick: () => store.updateSettings({ theme: t.id }),
+      }, h('span', { html: icon(t.iconName, { size: 16 }), style: { display: 'flex' } }), t.label))),
     h('div', { class: 'divider' }),
     h('label', { class: 'field', style: { marginBottom: '0' } },
       h('span', { class: 'field__label' }, '週の始まり'),
@@ -60,20 +60,38 @@ export function renderSettings(store) {
   /* ---------------- 復習の挙動 ---------------- */
   root.appendChild(h('section', { class: 'card' },
     h('div', { class: 'card__title' },
-      h('span', { html: icon('target', { size: 18 }), style: { display: 'flex' } }), '復習の挙動'),
+      h('span', { html: icon('target', { size: 18 }), style: { display: 'flex' } }), '復習のしかた'),
+    switchRow({
+      title: '思い出してから内容を開く',
+      desc: '復習のときは手掛かりだけを表示し、［内容を見る］で本文を開いてから記録します。',
+      checked: s.hideBodyUntilRecall,
+      onChange: (v) => store.updateSettings({ hideBodyUntilRecall: v }),
+    }),
+    h('div', { class: 'divider' }),
     switchRow({
       title: '想起の結果で間隔を調整する',
-      desc: '「覚えていた / あいまい / 忘れた」に応じて、残りの復習日を自動で伸縮させます。',
+      desc: '「覚えていた / あいまい / 忘れた」に応じて、残りの復習日を自動で伸縮させます。切り替えると既存のメモの予定も組み直されます。',
       checked: s.adaptive,
       onChange: (v) => store.updateSettings({ adaptive: v }),
     }),
     h('div', { class: 'divider' }),
     switchRow({
-      title: '期限切れを今日に繰り越す',
-      desc: 'やり残した復習を今日のタスクの先頭にまとめて表示します。',
+      title: '思い出し待ちを今日に繰り越す',
+      desc: 'やり残した復習を今日のタスクに並べます。カレンダー上の元の日付は変わりません。',
       checked: s.carryOverOverdue,
       onChange: (v) => store.updateSettings({ carryOverOverdue: v }),
-    })));
+    }),
+    s.carryOverOverdue ? h('label', { class: 'field', style: { marginTop: '12px', marginBottom: '0' } },
+      h('span', { class: 'field__label' }, '1 日に取り戻す件数'),
+      h('select', {
+        class: 'select',
+        onChange: (e) => store.updateSettings({ overdueDailyLimit: Number(e.target.value) }),
+      }, ...OVERDUE_LIMITS.map((n) => h('option', {
+        value: String(n),
+        selected: s.overdueDailyLimit === n,
+      }, n === 0 ? 'すべて出す' : `1日 ${n} 件まで`))),
+      h('span', { class: 'field__hint' },
+        'たまった復習を少しずつ取り戻すための上限です。残りは順番待ちとして保たれます。')) : null));
 
   /* ---------------- データ ---------------- */
   root.appendChild(renderDataCard(store));
@@ -87,11 +105,13 @@ export function renderSettings(store) {
       stat(st.total, 'メモ'),
       stat(st.active, '復習中'),
       stat(st.graduated, '定着'),
-      stat(st.overdue, '期限切れ'),
+      stat(st.overdue, '思い出し待ち'),
       stat(st.pendingToday, '今日の復習'),
-      stat(st.upcoming7, '今週の予定')),
-    h('div', { class: 'field__hint', style: { marginTop: '10px' } },
-      `保存先: ${store.adapter.id}　最終更新: ${formatDateTime(store.data.meta.updatedAt)}　v${APP_VERSION}`)));
+      stat(st.reviewsDone, '思い出した回数')),
+    st.reviewsDone ? h('div', { class: 'field__hint', style: { marginTop: '10px' } },
+      `内訳: 覚えていた ${st.ratings.known} / あいまい ${st.ratings.vague} / 忘れた ${st.ratings.forgot}`) : null,
+    h('div', { class: 'field__hint', style: { marginTop: '6px' } },
+      `保存先: ${store.adapter.label ?? store.adapter.id}　最終更新: ${formatDateTime(store.data.meta.updatedAt)}　v${APP_VERSION}`)));
 
   return root;
 }
@@ -105,6 +125,7 @@ function renderCurveCard(store) {
     const s = store.settings;
     const preset = getPreset(s.presetId);
     const intervals = s.presetId === 'custom' ? sanitizeIntervals(s.customIntervals) : preset.intervals;
+    const last = intervals[intervals.length - 1];
 
     const children = [
       h('div', { class: 'card__title' },
@@ -120,7 +141,8 @@ function renderCurveCard(store) {
       h('div', { class: 'field__hint', style: { margin: '10px 0' } }, preset.description),
       curvePreview(intervals),
       h('div', { class: 'field__hint', style: { marginBottom: '10px' } },
-        `復習 ${intervals.length} 回：${intervals.map((d) => `${d}日後`).join(' → ')}`),
+        `復習 ${intervals.length} 回・最後は ${formatDuration(last)}後：`
+        + `${intervals.map((d) => formatDuration(d)).join(' → ')}`),
       s.presetId === 'custom' ? customIntervalEditor(store) : null,
     ].filter(Boolean);
     card.replaceChildren(...children);
@@ -136,7 +158,7 @@ function customIntervalEditor(store) {
     class: 'input',
     type: 'number',
     min: '1',
-    max: '3650',
+    max: String(MAX_INTERVAL_DAYS),
     placeholder: '日数',
     style: { width: '7em' },
   });
@@ -152,7 +174,7 @@ function customIntervalEditor(store) {
     h('div', { class: 'field__label' }, 'カスタム間隔（起点日からの日数）'),
     h('div', { class: 'interval-editor' },
       ...intervals.map((d) => h('span', { class: 'interval-pill' },
-        `${d}日`,
+        `${formatDuration(d)}`,
         iconButton(icon('close', { size: 14 }), {
           label: `${d}日を削除`,
           className: '',
@@ -162,7 +184,13 @@ function customIntervalEditor(store) {
         }))),
       input,
       button('追加', { className: 'btn btn--tonal btn--sm', onClick: add })),
-    h('div', { class: 'field__hint' }, '1〜3650 日。重複と並び順は自動で整理されます。'));
+    h('div', { class: 'filter-row', style: { marginTop: '8px' } },
+      ...[365, 730, 1825, 3650, 10950].map((d) => h('button', {
+        type: 'button',
+        class: 'chip',
+        onClick: () => store.updateSettings({ customIntervals: [...intervals, d] }),
+      }, `+ ${formatDuration(d)}`))),
+    h('div', { class: 'field__hint' }, `1 日〜${formatDuration(MAX_INTERVAL_DAYS)}。重複と並び順は自動で整理されます。`));
 }
 
 function renderDataCard(store) {
@@ -189,6 +217,12 @@ function renderDataCard(store) {
       h('span', { html: icon('data', { size: 18 }), style: { display: 'flex' } }), 'データ'),
     h('div', { class: 'card__desc' },
       'データはこの端末のブラウザ内にのみ保存されます。機種変更やブラウザの初期化に備えて、ときどきバックアップしてください。'),
+
+    store.storageWarning
+      ? h('div', { class: 'banner banner--warning', style: { marginBottom: '12px' } },
+        h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
+        h('span', {}, store.storageWarning))
+      : null,
 
     h('div', { class: 'note-card__actions', style: { marginTop: '0' } },
       button('バックアップを保存', {
@@ -250,7 +284,7 @@ function renderDataCard(store) {
           danger: true,
         });
         if (!ok) return;
-        store.clearAll();
+        await store.clearAll();
         toast('すべてのデータを削除しました');
       },
     }));

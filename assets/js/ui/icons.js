@@ -13,6 +13,7 @@ const PATHS = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6.5 7l.9 12.2a1 1 0 0 0 1 .8h7.2a1 1 0 0 0 1-.8L17.5 7M9.5 7V4.6a.6.6 0 0 1 .6-.6h3.8a.6.6 0 0 1 .6.6V7"/>',
   chevronLeft: '<path d="M14.5 6l-6 6 6 6"/>',
   chevronRight: '<path d="M9.5 6l6 6-6 6"/>',
+  chevronDown: '<path d="M6 9.5l6 6 6-6"/>',
   check: '<path d="M5 12.8l4.4 4.4L19 7.6"/>',
   download: '<path d="M12 3.5v11.5M7.5 10.5L12 15l4.5-4.5M4.5 20h15"/>',
   upload: '<path d="M12 20.5V9M7.5 13.5L12 9l4.5 4.5M4.5 4h15"/>',
@@ -38,6 +39,10 @@ const PATHS = {
   play: '<path d="M7 4.8l12 7.2-12 7.2z"/>',
   skip: '<path d="M5.5 6l7 6-7 6zM17 5.5v13"/>',
   filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M4 4l16 16"/><path d="M9.9 5.9A9.8 9.8 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3.3 4M6.6 7.7A17 17 0 0 0 2.5 12S6 18.5 12 18.5c1.2 0 2.3-.2 3.3-.6"/><path d="M9.9 10.2a3 3 0 0 0 4 4.1"/>',
+  flag: '<path d="M6 21V4M6 4h11l-2 3.5L17 11H6"/>',
+  layers: '<path d="M12 3l9 4.5-9 4.5-9-4.5L12 3z"/><path d="M3 12l9 4.5L21 12M3 16.5L12 21l9-4.5"/>',
 };
 
 /**

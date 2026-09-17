@@ -5,8 +5,10 @@ import { openDialog, openSheet, openMenu, confirmDialog, toast } from './overlay
 import { curvePreview, reviewTimeline, noteCard, tagChips } from './components.js';
 import { openExportDialog } from './exportDialog.js';
 import { PRESETS, getPreset, resolveIntervals, sanitizeIntervals } from '../core/curve.js';
-import { displayTitle } from '../core/models.js';
-import { addDays, diffDays, formatDateTime, formatLong, formatMedium, formatRelative, formatSmart, todayKey } from '../core/date.js';
+import { displayTitle, recallCue } from '../core/models.js';
+import {
+  addDays, diffDays, formatDateTime, formatDuration, formatLong, formatRelative, formatSmart, todayKey,
+} from '../core/date.js';
 
 /* ------------------------------------------------------------------ */
 /* エディタ                                                            */
@@ -24,6 +26,7 @@ export function openNoteEditor(store, options = {}) {
 
   const state = {
     title: existing?.title ?? '',
+    cue: existing?.cue ?? '',
     body: existing?.body ?? '',
     tags: (existing?.tags ?? parent?.tags ?? []).join(' '),
     anchorDate: existing?.anchorDate ?? options.anchorDate ?? todayKey(),
@@ -36,6 +39,14 @@ export function openNoteEditor(store, options = {}) {
     placeholder: '覚えておきたいことを書きます。1 行目がタイトルとして使われます。',
     value: state.body,
     onInput: (e) => { state.body = e.target.value; },
+  });
+
+  const cueInput = h('input', {
+    class: 'input',
+    type: 'text',
+    placeholder: '例）減価償却の3つの方法は？',
+    value: state.cue,
+    onInput: (e) => { state.cue = e.target.value; },
   });
 
   const titleInput = h('input', {
@@ -83,10 +94,12 @@ export function openNoteEditor(store, options = {}) {
       h('div', { class: 'card__desc' }, preset.description),
       curvePreview(intervals),
       h('div', { class: 'filter-row', style: { marginTop: '8px', flexWrap: 'wrap' } },
-        ...intervals.slice(0, 10).map((d) => h('span', { class: 'chip chip--static' },
-          formatSmart(addDays(state.anchorDate, d))))),
-      intervals.length > 10 ? h('div', { class: 'field__hint' }, `ほか ${intervals.length - 10} 回`) : null,
-      h('div', { class: 'field__hint' }, `合計 ${intervals.length} 回・最終 ${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`),
+        ...intervals.slice(0, 8).map((d) => h('span', { class: 'chip chip--static' },
+          `${formatDuration(d)}後 ${formatSmart(addDays(state.anchorDate, d))}`))),
+      intervals.length > 8 ? h('div', { class: 'field__hint' }, `ほか ${intervals.length - 8} 回`) : null,
+      h('div', { class: 'field__hint' },
+        `合計 ${intervals.length} 回・最後は ${formatDuration(intervals[intervals.length - 1])}後の `
+        + `${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`),
     );
   }
   renderSchedule();
@@ -108,6 +121,12 @@ export function openNoteEditor(store, options = {}) {
     h('label', { class: 'field' },
       h('span', { class: 'field__label' }, 'タイトル（任意）'),
       titleInput),
+
+    h('label', { class: 'field' },
+      h('span', { class: 'field__label' }, '思い出すための手掛かり（任意）'),
+      cueInput,
+      h('span', { class: 'field__hint' },
+        '復習のときは、まずこれだけが表示されます。空欄ならタイトルが手掛かりになります。')),
 
     h('label', { class: 'field' },
       h('span', { class: 'field__label' }, 'タグ（任意）'),
@@ -139,6 +158,7 @@ export function openNoteEditor(store, options = {}) {
           if (existing) {
             store.updateNote(existing.id, {
               title: state.title,
+              cue: state.cue,
               body: state.body,
               tags: state.tags,
               presetId: state.presetId,
@@ -148,6 +168,7 @@ export function openNoteEditor(store, options = {}) {
           } else {
             const note = store.addNote({
               title: state.title,
+              cue: state.cue,
               body: state.body,
               tags: state.tags,
               anchorDate: state.anchorDate,
@@ -198,6 +219,10 @@ export function openNoteDetail(store, noteId) {
 
       note.tags.length ? h('div', { style: { marginTop: '10px' } }, tagChips(note.tags)) : null,
 
+      note.cue ? h('div', { class: 'detail-cue' },
+        h('span', { class: 'detail-cue__label' }, '手掛かり'),
+        h('span', {}, recallCue(note))) : null,
+
       note.body ? h('p', {
         style: {
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '14px',
@@ -238,7 +263,9 @@ export function openNoteDetail(store, noteId) {
       }) : null,
 
       children.length ? h('div', {},
-        h('div', { class: 'daypanel__section-title' }, `追加メモ（${children.length}）`),
+        h('div', { class: 'daypanel__section-title' },
+          h('span', { html: icon('branch', { size: 16 }), style: { display: 'flex' } }),
+          `このメモから生まれた気づき（${children.length}）`),
         ...children.map((c) => noteCard({
           store,
           note: c,

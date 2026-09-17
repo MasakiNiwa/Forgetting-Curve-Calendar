@@ -61,6 +61,18 @@ export function mountApp(store, root) {
   const app = h('div', { class: 'app' }, appbar, main, nav);
   clear(root).append(app, fab);
 
+  // 保存できない環境（プライベートモード等）では、失われる前に必ず知らせる
+  if (store.storageWarning) {
+    const banner = h('div', { class: 'banner banner--warning banner--sticky', role: 'alert' },
+      h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
+      h('span', { style: { flex: '1' } }, store.storageWarning),
+      iconButton(icon('close', { size: 18 }), {
+        label: '閉じる',
+        onClick: () => banner.remove(),
+      }));
+    appbar.insertAdjacentElement('afterend', banner);
+  }
+
   function render() {
     route = currentRoute(ROUTES, 'calendar');
     const def = ROUTES.find((r) => r.id === route) || ROUTES[0];

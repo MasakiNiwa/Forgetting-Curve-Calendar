@@ -39,8 +39,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .app {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto 1fr auto;
-  grid-template-areas: "bar" "main" "nav";
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas: "bar" "banner" "main" "nav";
   height: 100dvh;
 }
 
@@ -643,8 +643,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
 @media (min-width: 1000px) {
   .app {
     grid-template-columns: var(--fcc-nav-rail-w) minmax(0, 1fr);
-    grid-template-rows: auto 1fr;
-    grid-template-areas: "nav bar" "nav main";
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas: "nav bar" "nav banner" "nav main";
   }
   .app__main { padding-bottom: 32px; }
   .nav {
@@ -662,7 +662,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   .fab { bottom: 32px; right: 32px; }
   .toast { bottom: 32px; left: calc(50% + var(--fcc-nav-rail-w) / 2); }
   .calendar-layout { grid-template-columns: minmax(0, 1fr) 380px; align-items: start; }
-  .daypanel { position: sticky; top: 8px; max-height: calc(100dvh - 96px); overflow-y: auto; }
+  .calendar-layout__panel { position: sticky; top: 8px; max-height: calc(100dvh - 120px); overflow-y: auto; }
   .day { min-height: 92px; }
   .dialog {
     inset: auto;
@@ -692,4 +692,211 @@ button, input, textarea, select { font: inherit; color: inherit; }
 @media print {
   .appbar, .nav, .fab { display: none; }
   .app { display: block; height: auto; }
+}
+
+/* ==========================================================================
+   v0.2: 今日カード / 集中復習 / 年月ピッカー / バナー
+   ========================================================================== */
+
+/* --- 保存できない環境などの警告 --- */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--fcc-radius-m);
+  font-size: .82rem;
+  line-height: 1.5;
+  background: var(--fcc-warning-container);
+  color: var(--fcc-on-surface);
+}
+.banner--info { background: var(--fcc-tertiary-container); color: var(--fcc-on-tertiary-container); margin: 8px 0; }
+.banner--sticky { grid-area: banner; margin: 0 16px 8px; align-items: center; }
+
+/* --- 今日カード --- */
+.today-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px;
+  margin-bottom: 16px;
+  border-radius: var(--fcc-radius-l);
+  background: var(--fcc-primary-container);
+  color: var(--fcc-on-primary-container);
+}
+.today-card__main { flex: 1; min-width: 180px; }
+.today-card__label { font-size: .74rem; font-weight: 700; letter-spacing: .06em; opacity: .8; }
+.today-card__counts { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 2px 0 4px; }
+.today-card__big { font-size: 2rem; font-weight: 700; line-height: 1.1; }
+.today-card__unit { font-size: .9rem; font-weight: 600; margin-left: -4px; }
+.today-card__chip {
+  padding: 2px 10px;
+  border-radius: var(--fcc-radius-full);
+  background: color-mix(in srgb, var(--fcc-on-primary-container) 12%, transparent);
+  font-size: .72rem;
+  font-weight: 700;
+}
+.today-card__chip--overdue { background: var(--fcc-error-container); color: var(--fcc-on-error-container); }
+.today-card__desc { font-size: .8rem; opacity: .9; }
+.today-card__cta { background: var(--fcc-primary); color: var(--fcc-on-primary); height: 48px; }
+.today-card--clear {
+  background: var(--fcc-surface-container-low);
+  color: var(--fcc-on-surface);
+  align-items: center;
+}
+.today-card__icon { display: flex; color: var(--fcc-success); }
+.today-card__title { font-weight: 700; font-size: .95rem; }
+
+/* --- 復習カード（思い出してから開く） --- */
+.note-card__content { min-height: 0; }
+.note-card__prompt {
+  margin: 6px 0 0;
+  padding: 14px;
+  border-radius: var(--fcc-radius-m);
+  border: 1px dashed var(--fcc-outline-variant);
+  text-align: center;
+  font-size: .82rem;
+  color: var(--fcc-on-surface-variant);
+}
+.note-card__cue { font-size: .78rem; color: var(--fcc-tertiary); margin: 0 0 4px; }
+.note-card__note { font-size: .76rem; color: var(--fcc-on-surface-variant); align-self: center; }
+.rating-row { display: flex; gap: 8px; width: 100%; }
+.rating-row .btn { flex: 1; }
+
+.detail-cue {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-tertiary-container);
+  color: var(--fcc-on-tertiary-container);
+  font-size: .88rem;
+}
+.detail-cue__label { font-size: .7rem; font-weight: 700; letter-spacing: .04em; opacity: .8; flex: none; }
+
+/* --- 集中復習モード --- */
+.session { display: flex; flex-direction: column; gap: 4px; min-height: 100%; }
+.session__progress { display: flex; align-items: center; gap: 12px; }
+.session__bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--fcc-surface-container-highest);
+  overflow: hidden;
+}
+.session__bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--fcc-primary);
+  transition: width var(--fcc-dur-medium) var(--fcc-ease-standard);
+}
+.session__count { font-size: .78rem; font-weight: 700; color: var(--fcc-on-surface-variant); }
+.session__meta { font-size: .74rem; color: var(--fcc-on-surface-variant); margin-top: 12px; }
+.session__cue {
+  font-size: 1.3rem;
+  font-weight: 700;
+  line-height: 1.5;
+  margin: 6px 0 10px;
+  word-break: break-word;
+}
+.session__tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.session__answer { flex: 1; }
+.session__hint {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--fcc-on-surface-variant);
+  border: 1px dashed var(--fcc-outline-variant);
+  border-radius: var(--fcc-radius-l);
+  font-size: .85rem;
+}
+.session__answer-label { font-size: .74rem; font-weight: 700; color: var(--fcc-on-surface-variant); margin-bottom: 4px; }
+.session__body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--fcc-surface-container-lowest);
+  border-radius: var(--fcc-radius-l);
+  padding: 16px;
+  font-size: .95rem;
+  line-height: 1.75;
+  margin: 0;
+}
+.session__ask { text-align: center; font-size: .82rem; color: var(--fcc-on-surface-variant); margin: 16px 0 8px; }
+.session__actions { margin-top: 16px; }
+.session__footer { display: flex; justify-content: center; margin-top: 12px; }
+
+.session__done { text-align: center; padding: 24px 8px; }
+.session__done-icon { display: flex; justify-content: center; color: var(--fcc-primary); margin-bottom: 12px; }
+.session__done-title { font-size: 1.15rem; margin-bottom: 20px; }
+.session__summary { display: flex; justify-content: center; gap: 24px; margin-bottom: 16px; }
+.session__summary-value { font-size: 1.6rem; font-weight: 700; line-height: 1.2; }
+.session__summary-label { font-size: .74rem; color: var(--fcc-on-surface-variant); }
+.session__closing { color: var(--fcc-on-surface-variant); font-size: .88rem; margin-bottom: 20px; }
+
+/* --- 年月ピッカー --- */
+.calendar__month {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px 4px 10px;
+  border: 0;
+  border-radius: var(--fcc-radius-s);
+  background: transparent;
+  color: inherit;
+  font-size: 1.15rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.calendar__month:hover { background: var(--fcc-surface-container-high); }
+.calendar__month-caret { display: flex; color: var(--fcc-on-surface-variant); }
+
+.monthpicker__year { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 12px; }
+.monthpicker__year-input { width: 6em; text-align: center; font-size: 1.1rem; font-weight: 700; }
+.monthpicker__jumps { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 12px; }
+.monthpicker__months { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.monthpicker__month {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 4px;
+  border: 0;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-surface-container);
+  color: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.monthpicker__month:hover { background: var(--fcc-surface-container-high); }
+.monthpicker__month--current { box-shadow: inset 0 0 0 2px var(--fcc-primary); }
+.monthpicker__count {
+  font-size: .68rem;
+  font-weight: 700;
+  color: var(--fcc-on-primary-container);
+  background: var(--fcc-primary-container);
+  border-radius: var(--fcc-radius-full);
+  padding: 0 6px;
+}
+
+.help-example {
+  background: var(--fcc-surface-container);
+  border-radius: var(--fcc-radius-m);
+  padding: 12px 14px;
+  font-size: .84rem;
+  line-height: 1.8;
+  margin-bottom: 12px;
+}
+
+/* --- モバイルでは日別パネルをボトムシートで出す --- */
+.calendar-layout__panel { display: none; }
+.daypanel--sheet { background: transparent; padding: 0; }
+
+@media (min-width: 1000px) {
+  .calendar-layout__panel { display: block; }
+  .banner--sticky { margin: 0 32px 8px; }
+  .today-card { align-items: center; }
 }

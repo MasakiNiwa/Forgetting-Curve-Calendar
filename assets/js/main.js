@@ -4,9 +4,9 @@ import { mountApp } from './ui/app.js';
 import { applyTheme } from './ui/theme.js';
 import { APP_NAME, APP_VERSION } from './core/config.js';
 
-function boot() {
+async function boot() {
   const store = new Store();
-  store.load();
+  await store.load();
   applyTheme(store.settings.theme);
 
   store.subscribe((event) => {
