@@ -1,0 +1,15 @@
+{
+  "name": "忘却曲線カレンダー",
+  "short_name": "忘却曲線",
+  "description": "そのメモ、もちろん忘れます — 忘却曲線で自動リマインドするカレンダー型メモ帳",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#fbf8ff",
+  "theme_color": "#4c5ea9",
+  "icons": [
+    { "src": "assets/icons/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

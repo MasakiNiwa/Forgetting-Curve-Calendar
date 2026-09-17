@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="忘却曲線カレンダー">
+  <rect width="64" height="64" rx="14" fill="#4c5ea9"/>
+  <g fill="none" stroke="#dee0ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 14v36h36"/>
+    <path d="M14 21c22 0 10 26 36 26"/>
+  </g>
+  <circle cx="14" cy="21" r="4" fill="#c0e9fa"/>
+  <circle cx="27" cy="36" r="3.5" fill="#c0e9fa"/>
+  <circle cx="41" cy="44" r="3" fill="#c0e9fa"/>
+</svg>
