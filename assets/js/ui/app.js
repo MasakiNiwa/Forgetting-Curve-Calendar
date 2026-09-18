@@ -11,6 +11,7 @@ import { renderHelp } from './views/help.js';
 import { currentRoute, navigate, parseHash, startRouter } from './router.js';
 import { renderNoteEditor, disposeNoteEditor } from './views/noteEditor.js';
 import { openBackupSheet, backupLabel } from './backup.js';
+import { missionButton, announceMissions, celebrate } from './missions.js';
 import { APP_NAME, APP_TAGLINE } from '../core/config.js';
 
 const ROUTES = [
@@ -59,6 +60,9 @@ export function mountApp(store, root) {
   }
   updateBackupBadge();
 
+  // 毎日ここへ戻ってくる理由（デイリーミッション）への入口
+  const mission = missionButton(store);
+
   const appbar = h('header', { class: 'appbar' },
     h('div', { class: 'appbar__brand' },
       h('span', { class: 'appbar__logo', html: icon('curve', { size: 26 }), style: { display: 'flex' } }),
@@ -66,6 +70,7 @@ export function mountApp(store, root) {
         h('div', { class: 'appbar__title' }, APP_NAME),
         h('div', { class: 'appbar__tagline' }, APP_TAGLINE))),
     h('div', { class: 'appbar__spacer' }),
+    mission.element,
     backupButton);
 
   const fab = h('button', {
@@ -124,14 +129,31 @@ export function mountApp(store, root) {
     document.title = `${def.label}｜${APP_NAME}`;
   }
 
+  // ミッションの判定は保存のたびに走るので、自分の commit で再入しないようにする
+  let syncing = false;
+  function syncMissions() {
+    if (syncing || !store.settings.missionsEnabled) { mission.update(); return; }
+    syncing = true;
+    try {
+      const result = store.syncMissions();
+      mission.update();
+      announceMissions(result);
+      celebrate(store, result);
+    } finally {
+      syncing = false;
+    }
+  }
+
   store.subscribe((event) => {
     if (event?.type === 'error') toast(event.message);
     updateBackupBadge();
+    syncMissions();
     // 編集画面は自分で描画を持っているので、保存のたびに作り直さない
     if (document.documentElement.dataset.mode === 'editor') return;
     render();
   });
 
   startRouter(render);
+  syncMissions();
   return { render };
 }

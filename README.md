@@ -28,6 +28,8 @@
 - 🕊️ **たまっても大丈夫** — やり残しは「思い出し待ち」として、1 日 N 件ずつ。終えたら補充されない
 - 🗂️ **あとで決める** — 復習の予定を付けずに保存し、あとから始めることもできる
 - 🏁 **節目が残る** — 最初の再会、初めての気づき、7日続けて触れた… を「記録」画面に
+- ◎ **デイリーミッション** — 毎日 3 つまでの小さなお題。全部そろえると連続達成が伸び、レベルと称号が上がる
+- 🛡️ **おまもり** — 7 日続けるごとに 1 つ。できなかった日を肩代わりするので、途切れにくい
 - 📤 **テキスト出力** — Markdown / テキスト / CSV / JSON でエクスポート
 - 💾 **完全バックアップと復元** — 全データを JSON で保存・復元。画面右上からいつでも保存でき、最後に保存してからの日数も出ます
 - ⚙️ **設定 / ヘルプ** — 曲線プリセット、テーマ、週の開始曜日ほか
@@ -66,8 +68,8 @@ index.html
 assets/
   css/    tokens.css / app.css
   js/
-    core/  storage / migrations / models / curve / store / exporter … ドメイン（UI 非依存）
-    ui/    app / editor / reviewSession / components …
+    core/  storage / migrations / models / curve / missions / store / exporter … ドメイン（UI 非依存）
+    ui/    app / editor / missions / backup / reviewSession / components …
     editor/  history / textEditor … テキスト編集の中核（UI 非依存）
     ui/      … charts / reviewSession ほか
     ui/views/  calendar / noteEditor / notes / stats / settings / help

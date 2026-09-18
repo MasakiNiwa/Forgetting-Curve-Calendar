@@ -75,9 +75,25 @@ function v2ToV3(data) {
   };
 }
 
+/**
+ * v3 → v4
+ * デイリーミッション（毎日の小さな目標）を追加した。
+ * 既存データには空の進み具合を用意するだけで、メモには手を触れない。
+ */
+function v3ToV4(data) {
+  return {
+    ...data,
+    schemaVersion: 4,
+    progress: data.progress && typeof data.progress === 'object'
+      ? data.progress
+      : { points: 0, streak: { current: 0, best: 0, lastDay: null, shields: 0 }, days: {} },
+  };
+}
+
 const MIGRATIONS = {
   1: v1ToV2,
   2: v2ToV3,
+  3: v3ToV4,
 };
 
 export function migrate(raw) {

@@ -911,8 +911,15 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-size: .78rem;
 }
 .spread-sample__row { display: flex; gap: 10px; align-items: baseline; }
-.spread-sample__label { color: var(--fcc-on-surface-variant); min-width: 4em; }
-.spread-sample__value { font-variant-numeric: tabular-nums; }
+.spread-sample__label { color: var(--fcc-on-surface-variant); min-width: 4em; flex: none; }
+/* 桁数が変わっても行が増えないように折り返さない（位置が動くと結果を見失う） */
+.spread-sample__value {
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* --- チャート --- */
 .chart { width: 100%; height: auto; display: block; overflow: visible; }
@@ -1315,3 +1322,214 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .backup-status__dot--stale { background: var(--fcc-warning); }
 .backup-status__label { font-weight: 650; font-size: .9rem; }
+
+/* ==========================================================================
+   デイリーミッション
+   ========================================================================== */
+
+.banner--success { background: var(--fcc-success-container); color: var(--fcc-on-surface); }
+
+/* --- 進み具合のバー（ミッション・レベル共通） --- */
+.meter {
+  height: 8px;
+  border-radius: var(--fcc-radius-full);
+  background: var(--fcc-surface-container-highest);
+  overflow: hidden;
+  margin: 6px 0;
+}
+.meter--sm { height: 6px; }
+.meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--fcc-primary);
+  transition: width var(--fcc-dur-medium) var(--fcc-ease-standard);
+}
+
+/* --- アプリバーのリング --- */
+.appbar__mission {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--fcc-radius-full);
+  background: transparent;
+  color: var(--fcc-primary);
+  cursor: pointer;
+  transition: background var(--fcc-dur-short) var(--fcc-ease-standard);
+}
+.appbar__mission:hover { background: color-mix(in srgb, var(--fcc-on-surface) 8%, transparent); }
+/* 設定でオフにしたときは、クラスの display に負けないように消す */
+.appbar__mission[hidden] { display: none; }
+.appbar__mission[data-complete="true"] { color: var(--fcc-success); }
+.mission-ring { position: relative; display: flex; align-items: center; justify-content: center; }
+.mission-ring__svg { display: block; }
+.mission-ring__count {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .72rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--fcc-on-surface);
+}
+.appbar__mission[data-complete="true"] .mission-ring__count { color: var(--fcc-success); }
+
+/* --- カレンダーの帯 --- */
+.mission-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--fcc-outline-variant);
+  border-radius: var(--fcc-radius-l);
+  background: var(--fcc-surface-container-low);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--fcc-dur-short) var(--fcc-ease-standard);
+}
+.mission-strip:hover { background: var(--fcc-surface-container); }
+.mission-strip__icon { display: flex; color: var(--fcc-primary); flex: none; }
+.mission-strip__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.mission-strip__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .9rem;
+  font-weight: 700;
+}
+.mission-strip__count {
+  font-size: .74rem;
+  font-weight: 800;
+  padding: 1px 8px;
+  border-radius: var(--fcc-radius-full);
+  background: var(--fcc-primary-container);
+  color: var(--fcc-on-primary-container);
+  font-variant-numeric: tabular-nums;
+}
+.mission-strip__bars { display: flex; gap: 5px; }
+.mission-strip__bar {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: var(--fcc-radius-full);
+  background: var(--fcc-surface-container-highest);
+  overflow: hidden;
+}
+.mission-strip__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--fcc-primary);
+  transition: width var(--fcc-dur-medium) var(--fcc-ease-standard);
+}
+.mission-strip__bar.is-done > span { width: 100% !important; background: var(--fcc-success); }
+.mission-strip__desc {
+  font-size: .76rem;
+  color: var(--fcc-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mission-strip__chev { display: flex; color: var(--fcc-on-surface-variant); flex: none; }
+
+/* --- シートの中身 --- */
+.mission-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  margin: 14px 0 10px;
+}
+.mission-streak {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 14px;
+  border-radius: var(--fcc-radius-l);
+  background: var(--fcc-surface-container);
+  color: var(--fcc-on-surface-variant);
+}
+.mission-streak.is-alive { background: var(--fcc-warning-container); color: var(--fcc-on-surface); }
+.mission-streak__icon { display: flex; }
+.mission-streak__value { font-size: 1.5rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.mission-streak__unit { font-size: .7rem; }
+.mission-level { min-width: 0; }
+.mission-level__top { display: flex; align-items: baseline; gap: 8px; }
+.mission-level__rank { font-weight: 700; font-size: .95rem; }
+.mission-level__lv { font-size: .78rem; color: var(--fcc-on-surface-variant); font-variant-numeric: tabular-nums; }
+
+.mission-shields { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.mission-shields__icons { display: flex; gap: 2px; }
+.mission-shield { display: flex; color: var(--fcc-outline-variant); }
+.mission-shield.is-held { color: var(--fcc-tertiary); }
+
+.mission-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.mission-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-surface-container);
+}
+.mission-card.is-done { background: var(--fcc-success-container); }
+.mission-card__icon { display: flex; color: var(--fcc-primary); flex: none; margin-top: 2px; }
+.mission-card.is-done .mission-card__icon { color: var(--fcc-success); }
+.mission-card__body { flex: 1; min-width: 0; }
+.mission-card__title { font-size: .9rem; font-weight: 700; }
+.mission-card__desc { font-size: .76rem; color: var(--fcc-on-surface-variant); margin-top: 2px; }
+.mission-card__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: .74rem;
+  color: var(--fcc-on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+.mission-card__points { font-weight: 700; }
+/* 達成後の背景でも説明が薄くなりすぎないようにする */
+.mission-card.is-done .mission-card__desc,
+.mission-card.is-done .mission-card__meta { color: color-mix(in srgb, var(--fcc-on-surface) 78%, transparent); }
+
+/* --- 全部そろったときの祝い --- */
+.celebrate { text-align: center; }
+.celebrate__burst {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  background: var(--fcc-primary-container);
+  color: var(--fcc-on-primary-container);
+}
+.celebrate__title { font-size: 1.1rem; margin: 0 0 8px; }
+.celebrate__streak {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--fcc-radius-full);
+  background: var(--fcc-warning-container);
+  font-size: .82rem;
+  font-weight: 700;
+}
+.celebrate__text { font-size: .84rem; color: var(--fcc-on-surface-variant); margin: 10px 0 0; line-height: 1.6; }
+.celebrate__text--muted { font-size: .78rem; }
+.celebrate__level { font-size: .88rem; font-weight: 700; color: var(--fcc-primary); margin: 10px 0 0; }
+
+/* シードを振り直しても行数が変わらないよう、2 行ぶんを確保する */
+.spread-summary { min-height: 2.6em; }
+/* 数字の差し替えでブラウザが勝手にスクロール位置を補正しないようにする */
+.schedule-preview, .spread-sample, .spread-summary { overflow-anchor: none; }
+.spread-sample__row[hidden] { display: none; }

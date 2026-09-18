@@ -96,6 +96,24 @@ export function renderSettings(store) {
       h('span', { class: 'field__hint' },
         'たまった復習を少しずつ取り戻すための上限です。残りは順番待ちとして保たれます。')) : null));
 
+  /* ---------------- 続ける仕組み ---------------- */
+  const missionState = s.missionsEnabled ? store.missionState() : null;
+  root.appendChild(h('section', { class: 'card' },
+    h('div', { class: 'card__title' },
+      h('span', { html: icon('mission', { size: 18 }), style: { display: 'flex' } }), '続ける仕組み'),
+    switchRow({
+      title: 'デイリーミッション',
+      desc: '毎日 3 つまでの小さなお題が出ます。予定の範囲を超える要求はせず、できない日があっても罰はありません。',
+      checked: s.missionsEnabled,
+      onChange: (v) => store.updateSettings({ missionsEnabled: v }),
+    }),
+    missionState ? h('div', { class: 'field__hint', style: { marginTop: '10px' } },
+      `今日 ${missionState.doneCount}/${missionState.total} 達成`
+      + `・連続 ${missionState.streak.current || 0}日`
+      + `・${missionState.level.rank}（Lv.${missionState.level.level}／${missionState.level.points} pt）`)
+      : h('div', { class: 'field__hint', style: { marginTop: '10px' } },
+        'オフにすると、アプリバーとカレンダーからミッションの表示が消えます。記録は残ります。')));
+
   /* ---------------- データ ---------------- */
   root.appendChild(renderDataCard(store));
 

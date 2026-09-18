@@ -54,6 +54,9 @@ const PATHS = {
   dice: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
   flag: '<path d="M6 21V4M6 4h11l-2 3.5L17 11H6"/>',
   layers: '<path d="M12 3l9 4.5-9 4.5-9-4.5L12 3z"/><path d="M3 12l9 4.5L21 12M3 16.5L12 21l9-4.5"/>',
+  mission: '<circle cx="12" cy="8.8" r="5.3"/><path d="M9.6 13.4L8.3 21l3.7-2 3.7 2-1.3-7.6"/><path d="M10.2 8.7l1.3 1.4 2.3-2.5"/>',
+  flame: '<path d="M12.5 3c.4 2.6-.7 4.1-2.1 5.4C8.7 9.9 7 11.5 7 14.2a5 5 0 0 0 10 0c0-2.3-1-3.8-2.2-5.2-.2 1-.8 1.7-1.6 2.1.5-3-.3-5.6-.7-8.1z"/>',
+  shield: '<path d="M12 3.3l7 2.4v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V5.7z"/><path d="M9.2 12.1l2 2 3.6-3.8"/>',
 };
 
 /**

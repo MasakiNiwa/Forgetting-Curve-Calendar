@@ -5,6 +5,7 @@ import { reviewCard, noteCard, emptyState } from '../components.js';
 import { openNoteEditor, openNoteDetail, openNoteMenu } from '../editor.js';
 import { startReviewSession } from '../reviewSession.js';
 import { openDialog, openSheet } from '../overlays.js';
+import { missionStrip } from '../missions.js';
 import {
   diffDays, formatLong, formatMonth, formatRelative, monthMatrix, todayKey, weekdayLabels,
 } from '../../core/date.js';
@@ -31,6 +32,16 @@ export function focusDate(key) {
   state.selected = key;
 }
 
+/**
+ * 先の月を見に行ったことを覚えておく。
+ * 「いつかまた目に触れる」を実感してもらうためのミッションに使う。
+ */
+function notePeek(store) {
+  const now = new Date();
+  const ahead = (state.year - now.getFullYear()) * 12 + (state.month - now.getMonth());
+  if (ahead >= 1) store.markMissionFlag('peeked');
+}
+
 export function renderCalendar(store) {
   ensureState();
   const today = todayKey();
@@ -38,6 +49,8 @@ export function renderCalendar(store) {
 
   const root = h('div', { class: 'page' });
   root.appendChild(todayCard(store));
+  const strip = missionStrip(store);
+  if (strip) root.appendChild(strip);
 
   const layout = h('div', { class: 'calendar-layout' });
   const calendar = h('section', { class: 'calendar', 'aria-label': 'カレンダー' });
@@ -46,6 +59,7 @@ export function renderCalendar(store) {
     const d = new Date(state.year, state.month + delta, 1);
     state.year = d.getFullYear();
     state.month = d.getMonth();
+    notePeek(store);
     store.emit({ type: 'view:refresh' });
   };
 
@@ -293,6 +307,7 @@ export function openMonthPicker(store) {
     // 選択日はその月の中に収める
     if (!state.selected.startsWith(target)) state.selected = `${target}-01`;
     dialog.close();
+    notePeek(store);
     store.emit({ type: 'view:refresh' });
   };
 

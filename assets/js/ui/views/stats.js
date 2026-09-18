@@ -4,6 +4,7 @@ import { icon } from '../icons.js';
 import { emptyState } from '../components.js';
 import { activityHeatmap, monthlyBars, ratingBar } from '../charts.js';
 import { startReviewSession } from '../reviewSession.js';
+import { openMissionSheet } from '../missions.js';
 import { focusDate } from './calendar.js';
 import { navigate } from '../router.js';
 import { RATINGS } from '../../core/curve.js';
@@ -43,6 +44,24 @@ export function renderStats(store) {
         week.insights ? `そのうち ${week.insights} 件は、読み返して生まれた気づきです。` : null,
         week.edited ? `ほかに ${week.edited} 件のメモを書き足しました。` : null,
       ].filter(Boolean).join(' ') || '書いた日も連続日数に数えます。')));
+
+  /* ---------------- 続ける仕組み ---------------- */
+  if (store.settings.missionsEnabled) {
+    const ms = store.missionState(today);
+    root.appendChild(h('section', { class: 'card' },
+      h('div', { class: 'card__title' },
+        h('span', { html: icon('mission', { size: 18 }), style: { display: 'flex' } }), 'デイリーミッション'),
+      h('div', { class: 'stat-grid' },
+        stat(`${ms.doneCount}/${ms.total}`, '今日の達成'),
+        stat(ms.streak.current || 0, '連続達成', ms.streak.best ? `最長 ${ms.streak.best}日` : null),
+        stat(`Lv.${ms.level.level}`, ms.level.rank),
+        stat(ms.level.points, '記憶ポイント', `次まで ${ms.level.toNext}`)),
+      button('今日のミッションを見る', {
+        className: 'btn btn--tonal btn--block',
+        icon: icon('mission', { size: 18 }),
+        onClick: () => openMissionSheet(store),
+      })));
+  }
 
   /* ---------------- 節目 ---------------- */
   const { achieved, next } = store.milestones(today);

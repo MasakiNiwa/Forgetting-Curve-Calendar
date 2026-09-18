@@ -7,6 +7,7 @@ import { openExportDialog } from './exportDialog.js';
 import { navigate, parseHash } from './router.js';
 import { displayTitle, recallCue } from '../core/models.js';
 import { clearDraft, draftKey, isEmptyDraft, loadDraft, saveDraft } from '../core/drafts.js';
+import { localDayOf } from '../core/curve.js';
 import {
   diffDays, formatDateTime, formatLong, formatMedium, formatRelative, formatSmart, todayKey,
 } from '../core/date.js';
@@ -21,6 +22,9 @@ export function openNoteEditor(store, options = {}) {
   closeAllOverlays();
   const from = options.returnTo || currentSection();
   if (options.noteId) {
+    // 昔のメモを開き直したことを、ミッションの判定に伝える
+    const note = store.getNote(options.noteId);
+    if (note && localDayOf(note.createdAt) !== todayKey()) store.markMissionFlag('opened');
     navigate(['note', options.noteId], { from });
     return null;
   }

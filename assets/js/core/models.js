@@ -4,6 +4,7 @@
  */
 import { SCHEMA_VERSION, APP_VERSION } from './config.js';
 import { isValidKey, todayKey } from './date.js';
+import { MAX_SHIELDS, createStreak, pruneDays } from './missions.js';
 import {
   DEFAULT_PRESET_ID, DEFAULT_SPREAD_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, getSpread,
   localDayOf, randomSeed, refreshNote, resolveIntervals, sanitizeIntervals, sanitizeSeed,
@@ -32,6 +33,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   hideBodyUntilRecall: true,  // 復習時に本文を隠して思い出してから開く
   showCreatedOnCalendar: true,
   defaultExportFormat: 'markdown',
+  missionsEnabled: true,      // デイリーミッション（毎日の小さな目標）
 });
 
 /** 墓標（削除済みメモの id -> 削除時刻）。古すぎるものは捨てる。 */
@@ -47,6 +49,60 @@ export function normalizeTombstones(raw, keepDays = 180) {
   return out;
 }
 
+/** デイリーミッションの進み具合（ポイント・連続・日ごとの記録） */
+export function createProgress() {
+  return { points: 0, streak: createStreak(), days: {} };
+}
+
+/** 日ごとの記録を 1 日ぶん整える */
+function normalizeDayRecord(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const ids = Array.isArray(raw.ids) ? raw.ids.filter((v) => typeof v === 'string').slice(0, 8) : [];
+  const targets = {};
+  if (raw.targets && typeof raw.targets === 'object') {
+    Object.entries(raw.targets).forEach(([k, v]) => {
+      const n = Number(v);
+      if (typeof k === 'string' && Number.isFinite(n) && n > 0) targets[k] = Math.round(n);
+    });
+  }
+  const flags = {};
+  if (raw.flags && typeof raw.flags === 'object') {
+    Object.entries(raw.flags).forEach(([k, v]) => { if (v === true) flags[k] = true; });
+  }
+  return {
+    ids,
+    targets,
+    flags,
+    done: Array.isArray(raw.done) ? raw.done.filter((v) => typeof v === 'string').slice(0, 8) : [],
+    points: Math.max(0, Math.round(Number(raw.points) || 0)),
+    chars: Math.max(0, Math.round(Number(raw.chars) || 0)),
+    bonusAt: typeof raw.bonusAt === 'string' ? raw.bonusAt : null,
+    celebrated: raw.celebrated === true,
+  };
+}
+
+export function normalizeProgress(raw, today = todayKey()) {
+  const base = createProgress();
+  if (!raw || typeof raw !== 'object') return base;
+  const streakRaw = raw.streak && typeof raw.streak === 'object' ? raw.streak : {};
+  const days = {};
+  Object.entries(raw.days && typeof raw.days === 'object' ? raw.days : {}).forEach(([key, value]) => {
+    if (!isValidKey(key)) return;
+    const record = normalizeDayRecord(value);
+    if (record) days[key] = record;
+  });
+  return {
+    points: Math.max(0, Math.round(Number(raw.points) || 0)),
+    streak: {
+      current: Math.max(0, Math.round(Number(streakRaw.current) || 0)),
+      best: Math.max(0, Math.round(Number(streakRaw.best) || 0)),
+      lastDay: isValidKey(streakRaw.lastDay) ? streakRaw.lastDay : null,
+      shields: Math.max(0, Math.min(MAX_SHIELDS, Math.round(Number(streakRaw.shields) || 0))),
+    },
+    days: pruneDays(days, today),
+  };
+}
+
 export function createEmptyData() {
   const now = new Date().toISOString();
   return {
@@ -54,6 +110,7 @@ export function createEmptyData() {
     notes: [],
     deleted: {},
     settings: { ...DEFAULT_SETTINGS },
+    progress: createProgress(),
     meta: { createdAt: now, updatedAt: now, appVersion: APP_VERSION, lastBackupAt: null },
   };
 }
@@ -165,6 +222,7 @@ export function normalizeSettings(raw) {
   s.carryOverOverdue = s.carryOverOverdue !== false;
   s.hideBodyUntilRecall = s.hideBodyUntilRecall !== false;
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
+  s.missionsEnabled = s.missionsEnabled !== false;
   s.customIntervals = sanitizeIntervals(s.customIntervals);
   s.spreadId = getSpread(s.spreadId).id;
   const limit = Number(s.overdueDailyLimit);
@@ -270,6 +328,8 @@ export function normalizeData(raw) {
     // 削除したメモの墓標。別タブの古い保存で復活しないようにする
     deleted: normalizeTombstones(raw.deleted),
     settings,
+    // デイリーミッションの進み具合（バックアップにも含める）
+    progress: normalizeProgress(raw.progress),
     meta: {
       createdAt: raw.meta?.createdAt || base.meta.createdAt,
       updatedAt: raw.meta?.updatedAt || new Date().toISOString(),
