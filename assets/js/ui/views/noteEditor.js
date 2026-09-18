@@ -5,7 +5,7 @@
  * ステータスバーに寄せる。復習の設定は「メモ情報」パネルへ分ける。
  * 本文の保存と復習予定の変更は、はっきり分けて扱う。
  */
-import { h, button, iconButton, clear } from '../dom.js';
+import { h, append, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { openSheet, openMenu, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
@@ -468,7 +468,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
     if (note) {
       const children = store.childrenOf(note.id);
-      content.append(
+      append(content, [
         h('div', { class: 'divider' }),
         h('div', { class: 'daypanel__section-title' }, '復習の記録'),
         reviewTimeline(store, note),
@@ -483,7 +483,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
           })) : null,
         h('div', { class: 'field__hint', style: { marginTop: '12px' } },
           `作成 ${formatDateTime(note.createdAt)}／更新 ${formatDateTime(note.contentUpdatedAt || note.updatedAt)}`),
-      );
+      ]);
     }
 
     openSheet({ title: 'メモ情報', content });
@@ -588,13 +588,70 @@ function scheduleSection(store, state, note, { onChange }) {
     });
   };
 
+  const currentIntervals = () => {
+    const base = state.presetId === 'none' ? [] : sanitizeIntervals(state.intervals);
+    return base.length ? spreadIntervals(base, state.seed, state.spread) : [];
+  };
+
+  /**
+   * シードを振り直したときは、要素を作り直さず中の文字だけを書き換える。
+   * DOM が入れ替わらないので、開いた場所もスクロール位置もそのまま残る。
+   */
+  const previewSlot = h('div', { class: 'schedule-preview' });
+  // 2 行ぶんの高さを確保しておく（日付の桁が変わっても行が増減しないように）
+  const summaryTotal = h('div', {});
+  const summaryLast = h('div', {});
+  const summarySlot = h('div', { class: 'field__hint spread-summary' }, summaryTotal, summaryLast);
+  const sampleSlot = h('div', { class: 'spread-sample', style: { marginTop: '12px' } });
+  /** 行は使い回す（何回振り直しても、同じ要素の文字だけが変わる） */
+  const sampleRows = Array.from({ length: 5 }, () => {
+    const label = h('span', { class: 'spread-sample__label' });
+    const value = h('span', { class: 'spread-sample__value' });
+    const row = h('div', { class: 'spread-sample__row' }, label, value);
+    sampleSlot.appendChild(row);
+    return { row, label, value };
+  });
+  let seedInput = null;
+
+  const refreshValues = () => {
+    const intervals = currentIntervals();
+    if (!intervals.length) return;
+    const last = intervals[intervals.length - 1];
+
+    clear(previewSlot).append(curvePreview(intervals));
+    summaryTotal.textContent = `合計 ${intervals.length} 回`;
+    summaryLast.textContent = `最後は ${formatDuration(last)}後の `
+      + `${formatSmart(addDays(state.anchorDate, last))}`;
+
+    // 先頭 4 回と、いちばん先の 1 回を見せる
+    const shown = intervals.slice(0, 4).map((d, i) => ({ label: `${i + 1}回目`, days: d }));
+    if (intervals.length > 4) shown.push({ label: `${intervals.length}回目`, days: last });
+    sampleRows.forEach((r, i) => {
+      const item = shown[i];
+      r.row.hidden = !item;
+      if (!item) return;
+      r.label.textContent = item.label;
+      r.value.textContent = `${formatDuration(item.days)}後　`
+        + `${formatSmart(addDays(state.anchorDate, item.days))}`;
+    });
+    if (seedInput && seedInput.value !== String(state.seed)) seedInput.value = String(state.seed);
+  };
+
+  /** 骨組みを作り直す（プリセットや分散の強さを変えたとき） */
   const render = () => {
     const preset = getPreset(state.presetId);
-    const base = state.presetId === 'none' ? [] : sanitizeIntervals(state.intervals);
-    const intervals = base.length ? spreadIntervals(base, state.seed, state.spread) : [];
+    const intervals = currentIntervals();
+    seedInput = state.spread ? h('input', {
+      class: 'input',
+      type: 'number',
+      min: '0',
+      max: '9999',
+      value: String(state.seed),
+      style: { width: '6em' },
+      onChange: (e) => { state.seed = Number(e.target.value) || 0; apply(); refreshValues(); },
+    }) : null;
 
-    clear(box);
-    box.append(
+    append(clear(box), [
       h('div', { class: 'daypanel__section-title' }, '復習の設定'),
       h('div', { class: 'filter-row' },
         ...PRESETS.map((p) => h('button', {
@@ -607,14 +664,12 @@ function scheduleSection(store, state, note, { onChange }) {
               ? sanitizeIntervals(store.settings.customIntervals)
               : [...p.intervals];
             apply();
-            render();
+            keepScroll(render);
           },
         }, p.name))),
       h('div', { class: 'field__hint', style: { margin: '10px 0' } }, preset.description),
-      intervals.length ? curvePreview(intervals) : null,
-      intervals.length ? h('div', { class: 'field__hint' },
-        `合計 ${intervals.length} 回・最後は ${formatDuration(intervals[intervals.length - 1])}後の `
-        + `${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`) : null,
+      intervals.length ? previewSlot : null,
+      intervals.length ? summarySlot : null,
       intervals.length ? h('details', {
         class: 'editor__details',
         open: detailsOpen,
@@ -626,36 +681,24 @@ function scheduleSection(store, state, note, { onChange }) {
           h('select', {
             class: 'select',
             style: { width: 'auto' },
-            onChange: (e) => { state.spread = getSpread(e.target.value).ratio; apply(); render(); },
+            onChange: (e) => {
+              state.spread = getSpread(e.target.value).ratio;
+              apply();
+              keepScroll(render);
+            },
           }, ...SPREADS.map((sp) => h('option', {
             value: sp.id, selected: sp.id === spreadIdOf(state.spread),
           }, sp.label)))),
-        state.spread ? h('div', { class: 'spread-row', style: { marginTop: '10px' } },
+        seedInput ? h('div', { class: 'spread-row', style: { marginTop: '10px' } },
           h('div', { style: { flex: '1' } }, h('div', { class: 'field__label' }, 'シード')),
-          h('input', {
-            class: 'input',
-            type: 'number',
-            min: '0',
-            max: '9999',
-            value: String(state.seed),
-            style: { width: '6em' },
-            onChange: (e) => { state.seed = Number(e.target.value) || 0; apply(); render(); },
-          }),
+          seedInput,
           iconButton(icon('dice', { size: 20 }), {
             label: 'シードを振り直す',
             className: 'icon-btn icon-btn--filled',
-            onClick: () => { state.seed = randomSeed(); apply(); render(); },
+            // 振り直しても、開いた場所と並びはそのまま。数字だけが変わる
+            onClick: () => { state.seed = randomSeed(); apply(); refreshValues(); },
           })) : null,
-        h('div', { class: 'spread-sample', style: { marginTop: '12px' } },
-          ...intervals.slice(0, 4).map((d, i) => h('div', { class: 'spread-sample__row' },
-            h('span', { class: 'spread-sample__label' }, `${i + 1}回目`),
-            h('span', { class: 'spread-sample__value' },
-              `${formatDuration(d)}後　${formatSmart(addDays(state.anchorDate, d))}`))),
-          h('div', { class: 'spread-sample__row' },
-            h('span', { class: 'spread-sample__label' }, `${intervals.length}回目`),
-            h('span', { class: 'spread-sample__value' },
-              `${formatDuration(intervals[intervals.length - 1])}後　`
-              + `${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`))),
+        sampleSlot,
         h('div', { class: 'field__hint', style: { marginTop: '10px' } },
           note && !store.canChangeAnchor(note)
             ? `起点日 ${formatLong(state.anchorDate)}（記録があるため変更できません）`
@@ -667,8 +710,18 @@ function scheduleSection(store, state, note, { onChange }) {
       }) : null,
       note && note.reviews.some((r) => r.status === 'pending') ? h('div', { class: 'field__hint' },
         `次の復習は ${formatRelative(note.reviews.find((r) => r.status === 'pending').due)}`) : null,
-    );
+    ]);
+    refreshValues();
   };
+
+  /** 骨組みを作り直すときも、シートのスクロール位置は動かさない */
+  const keepScroll = (fn) => {
+    const scroller = box.closest('.sheet__content, .dialog__content, .dialog__body');
+    const top = scroller ? scroller.scrollTop : 0;
+    fn();
+    if (scroller) scroller.scrollTop = top;
+  };
+
   render();
   return box;
 }

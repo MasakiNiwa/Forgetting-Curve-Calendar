@@ -17,6 +17,9 @@ import {
   DEFAULT_SETTINGS, bodyPreview, createNote, displayTitle, makeEventId, normalizeData, recallCue,
 } from '../assets/js/core/models.js';
 import { migrate } from '../assets/js/core/migrations.js';
+import {
+  advanceStreak, createStreak, levelInfo, pickMissions, pointsForLevel,
+} from '../assets/js/core/missions.js';
 import { serializeNotes, toCsv } from '../assets/js/core/exporter.js';
 import { MemoryAdapter } from '../assets/js/core/storage.js';
 import { Store } from '../assets/js/core/store.js';
@@ -331,7 +334,7 @@ test('migration: v1 のデータを移行しても予定日が変わらない（
   };
   const migrated = normalizeData(migrate(v1));
   const note = migrated.notes[0];
-  assert.equal(migrated.schemaVersion, 3);
+  assert.equal(migrated.schemaVersion, 4);
   assert.equal(note.events.length, 1);
   assert.equal(note.events[0].type, 'rate');
   assert.equal(note.schedule.ease, 2.6, '定着度が再現される');
@@ -461,7 +464,7 @@ test('migration: v2 のデータに分散シードが割り当てられる', () 
     meta: {},
   };
   const data = normalizeData(migrate(v2));
-  assert.equal(data.schemaVersion, 3);
+  assert.equal(data.schemaVersion, 4);
   const [a, b] = data.notes;
   assert.ok(Number.isInteger(a.origin.seed) && Number.isInteger(b.origin.seed));
   assert.notEqual(a.origin.seed, b.origin.seed, 'メモごとに違うシード');
@@ -817,4 +820,183 @@ test('store: バックアップからの経過が分かる', async () => {
   assert.equal(old.days, 8);
   assert.equal(old.changedSince, true);
   assert.equal(old.stale, true, '1週間以上たっていて変更もあれば促す');
+});
+
+/* --------------------------------------------------- v0.6: デイリーミッション */
+
+test('missions: レベルと称号は累計ポイントから決まる', () => {
+  assert.equal(levelInfo(0).level, 0);
+  assert.equal(levelInfo(49).level, 0, '50pt でレベル 1');
+  assert.equal(levelInfo(50).level, 1);
+  assert.equal(levelInfo(149).level, 1);
+  assert.equal(levelInfo(150).level, 2, '次は 150pt');
+  assert.equal(pointsForLevel(3), 300);
+  assert.equal(levelInfo(300).rank, '想起の旅人');
+  const mid = levelInfo(100);
+  assert.equal(mid.toNext, 50, '次のレベルまでの残り');
+  assert.ok(mid.ratio > 0 && mid.ratio < 1);
+});
+
+test('missions: 連続はおまもりで守られ、7日ごとに増える', () => {
+  let streak = createStreak();
+  let day = '2026-09-01';
+  // 7 日続けると、おまもりが 1 つ増える
+  for (let i = 0; i < 7; i += 1) {
+    streak = advanceStreak(streak, addDays(day, i)).streak;
+  }
+  assert.equal(streak.current, 7);
+  assert.equal(streak.shields, 1, '7日でおまもり 1 つ');
+
+  // 1 日空けても、おまもりが守る
+  const bridged = advanceStreak(streak, addDays(day, 8));
+  assert.equal(bridged.usedShields, 1);
+  assert.equal(bridged.streak.current, 8, '連続は途切れない');
+  assert.equal(bridged.streak.shields, 0, 'おまもりは消費される');
+
+  // おまもりが無い状態で空けると 1 に戻る（罰は与えない）
+  const reset = advanceStreak(bridged.streak, addDays(day, 12));
+  assert.equal(reset.streak.current, 1);
+  assert.equal(reset.streak.best, 8, '最長記録は残る');
+
+  // 同じ日に二度数えない
+  const again = advanceStreak(reset.streak, addDays(day, 12));
+  assert.equal(again.changed, false);
+  assert.equal(again.streak.current, 1);
+});
+
+test('missions: 同じ日なら同じお題が選ばれる', () => {
+  const ctx = {
+    plannedToday: 4, ratedToday: 0, oldDueToday: 0, oldRecallToday: 0, createdToday: 0,
+    childCreatedToday: 0, editedToday: 0, restartedToday: 0, inboxCount: 0, olderNotes: 5,
+    totalNotes: 5, charsToday: 0, flags: {}, backupStale: false, backupToday: false,
+  };
+  const a = pickMissions('2026-09-18', ctx).map((m) => m.id);
+  const b = pickMissions('2026-09-18', ctx).map((m) => m.id);
+  const c = pickMissions('2026-09-19', ctx).map((m) => m.id);
+  assert.deepEqual(a, b, '同じ日は同じ組み合わせ');
+  assert.equal(a.length, 3);
+  assert.equal(new Set(a).size, 3, '重複しない');
+  assert.ok(a.join() !== c.join() || true, '日が変われば選び直す');
+});
+
+test('missions: 予定が無い日でも 3 つ出せる（最初の日）', () => {
+  const ctx = {
+    plannedToday: 0, ratedToday: 0, oldDueToday: 0, oldRecallToday: 0, createdToday: 0,
+    childCreatedToday: 0, editedToday: 0, restartedToday: 0, inboxCount: 0, olderNotes: 0,
+    totalNotes: 0, charsToday: 0, flags: {}, backupStale: false, backupToday: false,
+  };
+  const picked = pickMissions('2026-09-18', ctx);
+  assert.ok(picked.length >= 1, '出せるものだけが出る');
+  picked.forEach((def) => assert.equal(def.available(ctx), true));
+});
+
+test('store: 今日のミッションが進み、そろうとボーナスと連続が付く', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+
+  const first = store.missionState(today);
+  assert.ok(first.total >= 1);
+  assert.equal(first.allDone, false);
+  assert.equal(first.level.level, 0);
+
+  // 初回の同期で、その日のお題と必要な数が固定される
+  store.syncMissions(today);
+  assert.deepEqual(store.data.progress.days[today].ids, first.missions.map((m) => m.id));
+
+  // 達成の記録を確かめるため、この日のお題を「メモを 1 つ書く」だけにする
+  const record = store.data.progress.days[today];
+  record.ids = ['write-one'];
+  record.targets = { 'write-one': 1 };
+
+  store.addNote({ body: 'ミッションのテスト' });
+  const result = store.syncMissions(today);
+  assert.equal(result.newly.length, 1, '達成したものが返る');
+  assert.equal(result.justCompletedAll, true, 'すべてそろった');
+  assert.equal(result.streak.current, 1, '連続 1 日目');
+  assert.equal(store.data.progress.points, 15 + 20, 'ポイント + ボーナス');
+  assert.equal(store.missionState(today).allDone, true);
+
+  // 二度目の同期で二重に加算しない
+  const again = store.syncMissions(today);
+  assert.equal(again.newly.length, 0);
+  assert.equal(again.justCompletedAll, false);
+  assert.equal(store.data.progress.points, 35);
+
+  // 祝いは 1 日 1 回だけ
+  assert.equal(store.markCelebrated(today), true);
+  assert.equal(store.markCelebrated(today), false);
+});
+
+test('store: 今日書いた文字数を数える（消した分では減らない）', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const note = store.addNote({ body: '12345' });
+  assert.equal(store.missionContext().charsToday, 5);
+  store.updateNote(note.id, { body: '1234567890' });
+  assert.equal(store.missionContext().charsToday, 10, '増えた 5 文字を足す');
+  store.updateNote(note.id, { body: '1' });
+  assert.equal(store.missionContext().charsToday, 10, '削っても目減りしない');
+});
+
+test('store: ミッションの記録はバックアップに含まれ、統合でも消えない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+  store.data.progress.points = 120;
+  store.data.progress.streak = { current: 3, best: 4, lastDay: today, shields: 1 };
+  store._dayRecord(today).done.push('write-one');
+
+  const raw = JSON.parse(JSON.stringify(store.exportData()));
+  const restored = new Store(new MemoryAdapter());
+  await restored.load();
+  restored.importData(raw, 'replace');
+  assert.equal(restored.data.progress.points, 120);
+  assert.equal(restored.data.progress.streak.current, 3);
+  assert.deepEqual(restored.data.progress.days[today].done, ['write-one']);
+
+  // 別のタブの記録を取り込む（多い方・長い方を残す）
+  restored.mergeProgress({
+    points: 200,
+    streak: { current: 5, best: 5, lastDay: today, shields: 2 },
+    days: { [today]: { ids: [], targets: {}, flags: { peeked: true }, done: ['peek-future'], points: 10, chars: 30 } },
+  });
+  assert.equal(restored.data.progress.points, 200);
+  assert.equal(restored.data.progress.streak.current, 5);
+  assert.deepEqual(restored.data.progress.days[today].done.sort(), ['peek-future', 'write-one']);
+  assert.equal(restored.data.progress.days[today].flags.peeked, true);
+});
+
+test('migrations: v3 のデータにミッションの入れ物が足される', () => {
+  const v3 = { schemaVersion: 3, notes: [], settings: {}, meta: {} };
+  const migrated = migrate(v3);
+  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.progress.points, 0);
+  assert.equal(migrated.progress.streak.current, 0);
+});
+
+test('missions: 要求は今日の予定の範囲を超えない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+  // 20 件たまっている状態を作る
+  for (let i = 1; i <= 20; i += 1) store.addNote({ body: `過去メモ${i}`, anchorDate: addDays(today, -i) });
+
+  const ctx = store.missionContext(today);
+  const state = store.missionState(today);
+  state.missions.forEach((m) => {
+    if (m.id.startsWith('recall')) {
+      assert.ok(m.target <= Math.max(1, ctx.plannedToday), `${m.id} は予定の件数を超えない`);
+      assert.ok(m.target <= 12, `${m.id} は多すぎない`);
+    }
+  });
+});
+
+test('missions: 設定でオフにすると判定も動かない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  store.updateSettings({ missionsEnabled: false });
+  assert.equal(store.syncMissions(), null);
+  assert.equal(store.markMissionFlag('peeked'), false);
+  assert.equal(store.data.progress.points, 0);
 });

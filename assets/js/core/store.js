@@ -13,9 +13,13 @@ import {
   resolveIntervals, sanitizeIntervals, sanitizeSeed,
 } from './curve.js';
 import {
-  createEmptyData, createNote, makeEventId, normalizeData, normalizeNote,
+  createEmptyData, createNote, createProgress, makeEventId, normalizeData, normalizeNote,
   normalizeSettings, normalizeTags, normalizeTombstones,
 } from './models.js';
+import {
+  COMPLETE_BONUS, advanceStreak, evaluateMission, getMissionDef, levelInfo, pickMissions,
+  pruneDays, streakAlive,
+} from './missions.js';
 import { migrate } from './migrations.js';
 import { createDefaultAdapter } from './storage.js';
 
@@ -149,8 +153,11 @@ export class Store {
       }
     });
 
+    // ミッションの進み具合も、失わないように統合する
+    const progressChanged = this.mergeProgress(incoming.progress);
+
     const nextNotes = [...mine.values()];
-    const changed = added > 0 || updated > 0
+    const changed = added > 0 || updated > 0 || progressChanged
       || nextNotes.length !== this.data.notes.length;
     this.data.deleted = tombstones;
     if (changed) {
@@ -569,6 +576,7 @@ export class Store {
   addNote(input) {
     const note = createNote(input, this.settings);
     this.data.notes.push(note);
+    this.recordChars(note.body.length);
     this.commit({ type: 'note:add', noteId: note.id });
     return note;
   }
@@ -594,7 +602,12 @@ export class Store {
     if (patch.title !== undefined) setField('title', String(patch.title).trim());
     if (patch.cue !== undefined) setField('cue', String(patch.cue).trim());
     // 本文は前後の空白・改行を勝手に削らない（書いたとおりに残す）
-    if (patch.body !== undefined) setField('body', String(patch.body));
+    if (patch.body !== undefined) {
+      const before = note.body.length;
+      setField('body', String(patch.body));
+      // 「今日書いた量」は増えた分だけ数える（消した分で目減りさせない）
+      this.recordChars(note.body.length - before);
+    }
     if (patch.tags !== undefined) {
       const tags = normalizeTags(patch.tags);
       if (tags.join(',') !== note.tags.join(',')) { note.tags = tags; contentChanged = true; }
@@ -774,6 +787,225 @@ export class Store {
     if (patch.adaptive !== undefined) this.refreshAll();
     this.commit({ type: 'settings:update', patch });
     return this.data.settings;
+  }
+
+  /* ------------------------------------------------- デイリーミッション */
+
+  get progress() {
+    if (!this.data.progress) this.data.progress = createProgress();
+    return this.data.progress;
+  }
+
+  /** その日の記録の入れ物（無ければ作る。commit はしない） */
+  _dayRecord(day) {
+    const progress = this.progress;
+    if (!progress.days[day]) {
+      progress.days[day] = {
+        ids: [], targets: {}, flags: {}, done: [], points: 0, chars: 0, bonusAt: null, celebrated: false,
+      };
+    }
+    return progress.days[day];
+  }
+
+  /** 今日書いた文字数を足す（増えた分だけ） */
+  recordChars(delta, day = todayKey()) {
+    const n = Math.round(Number(delta) || 0);
+    if (n <= 0) return;
+    this._dayRecord(day).chars += n;
+  }
+
+  /**
+   * ミッションの判定に使う「その日の事実」。
+   * すべて今のデータから数え直す（別の場所に二重に持たない）。
+   */
+  missionContext(day = todayKey()) {
+    const queue = this.todayQueue(day);
+    const oldLine = addDays(day, -30);
+    let ratedToday = 0;
+    let oldRecallToday = 0;
+    let restartedToday = 0;
+    let createdToday = 0;
+    let childCreatedToday = 0;
+    let editedToday = 0;
+    let olderNotes = 0;
+    let inboxCount = 0;
+
+    this.data.notes.forEach((note) => {
+      const born = localDayOf(note.createdAt);
+      if (born === day) {
+        createdToday += 1;
+        if (note.parentId) childCreatedToday += 1;
+      } else {
+        olderNotes += 1;
+        if (note.contentUpdatedAt && localDayOf(note.contentUpdatedAt) === day) editedToday += 1;
+      }
+      if (note.status === 'inbox') inboxCount += 1;
+      note.events.forEach((ev) => {
+        if (ev.day !== day) return;
+        if (ev.type === 'rate') {
+          ratedToday += 1;
+          if (note.anchorDate <= oldLine) oldRecallToday += 1;
+        }
+        if (ev.type === 'restart') restartedToday += 1;
+      });
+    });
+
+    const backup = this.backupStatus(day);
+    const record = this.progress.days[day];
+    return {
+      day,
+      // その日に向き合う予定だった数（終わった分を含む＝進めても減らない）
+      plannedToday: ratedToday + queue.items.length,
+      ratedToday,
+      oldDueToday: queue.items.filter((it) => it.note.anchorDate <= oldLine).length + oldRecallToday,
+      oldRecallToday,
+      createdToday,
+      childCreatedToday,
+      editedToday,
+      restartedToday,
+      inboxCount,
+      olderNotes,
+      totalNotes: this.data.notes.length,
+      charsToday: record?.chars || 0,
+      flags: record?.flags || {},
+      backupStale: backup.stale,
+      backupToday: Boolean(backup.last) && localDayOf(backup.last) === day,
+    };
+  }
+
+  /** 今日のミッションと、レベル・連続の状態（読み取り専用） */
+  missionState(day = todayKey()) {
+    const ctx = this.missionContext(day);
+    const record = this.progress.days[day];
+    const locked = record?.ids?.length ? record.ids.map(getMissionDef).filter(Boolean) : [];
+    const picked = locked.length ? locked : pickMissions(day, ctx);
+    const missions = picked.map((def) => evaluateMission(def, ctx, record?.targets?.[def.id]));
+    const doneCount = missions.filter((m) => m.done).length;
+    return {
+      day,
+      missions,
+      doneCount,
+      total: missions.length,
+      allDone: missions.length > 0 && doneCount === missions.length,
+      earnedToday: record?.points || 0,
+      celebrated: record?.celebrated === true,
+      level: levelInfo(this.progress.points),
+      streak: { ...this.progress.streak, alive: streakAlive(this.progress.streak, day) },
+      context: ctx,
+    };
+  }
+
+  /** ミッションの達成を記録に焼き付ける。UI は戻り値を見て祝う。 */
+  syncMissions(day = todayKey()) {
+    if (!this.settings.missionsEnabled) return null;
+    const before = levelInfo(this.progress.points).level;
+    const record = this._dayRecord(day);
+    let changed = false;
+
+    const state = this.missionState(day);
+    if (!record.ids.length && state.missions.length) {
+      // その日のお題と必要な数は、最初に見たときに決めて動かさない
+      record.ids = state.missions.map((m) => m.id);
+      state.missions.forEach((m) => { record.targets[m.id] = m.target; });
+      changed = true;
+    }
+
+    const newly = state.missions.filter((m) => m.done && !record.done.includes(m.id));
+    newly.forEach((m) => {
+      record.done.push(m.id);
+      record.points += m.points;
+      this.progress.points += m.points;
+      changed = true;
+    });
+
+    let justCompletedAll = false;
+    let streakResult = null;
+    if (state.allDone && !record.bonusAt) {
+      record.bonusAt = new Date().toISOString();
+      record.points += COMPLETE_BONUS;
+      this.progress.points += COMPLETE_BONUS;
+      streakResult = advanceStreak(this.progress.streak, day);
+      this.progress.streak = streakResult.streak;
+      justCompletedAll = true;
+      changed = true;
+    }
+
+    if (changed) {
+      this.progress.days = pruneDays(this.progress.days, day);
+      this.commit({ type: 'missions:update', day });
+    }
+
+    return {
+      newly,
+      justCompletedAll,
+      streak: this.progress.streak,
+      usedShields: streakResult?.usedShields || 0,
+      awardedShield: streakResult?.awardedShield || false,
+      leveledUp: levelInfo(this.progress.points).level > before,
+      state: this.missionState(day),
+    };
+  }
+
+  /**
+   * 別のタブのミッション記録を取り込む。
+   * ポイントは多い方、連続は長い方、日ごとの達成は和集合にして、どちらの努力も消さない。
+   */
+  mergeProgress(theirs) {
+    if (!theirs || typeof theirs !== 'object') return false;
+    const ours = this.progress;
+    let changed = false;
+
+    if ((theirs.points || 0) > ours.points) { ours.points = theirs.points; changed = true; }
+    const mineStreak = ours.streak || {};
+    const yours = theirs.streak || {};
+    if ((yours.current || 0) > (mineStreak.current || 0)
+      || (yours.lastDay || '') > (mineStreak.lastDay || '')) {
+      ours.streak = {
+        current: Math.max(mineStreak.current || 0, yours.current || 0),
+        best: Math.max(mineStreak.best || 0, yours.best || 0),
+        lastDay: (yours.lastDay || '') > (mineStreak.lastDay || '') ? yours.lastDay : mineStreak.lastDay,
+        shields: Math.max(mineStreak.shields || 0, yours.shields || 0),
+      };
+      changed = true;
+    }
+
+    Object.entries(theirs.days || {}).forEach(([day, record]) => {
+      const mineDay = ours.days[day];
+      if (!mineDay) { ours.days[day] = record; changed = true; return; }
+      const done = [...new Set([...mineDay.done, ...record.done])];
+      if (done.length !== mineDay.done.length) { mineDay.done = done; changed = true; }
+      if (record.chars > mineDay.chars) { mineDay.chars = record.chars; changed = true; }
+      if (record.points > mineDay.points) { mineDay.points = record.points; changed = true; }
+      if (!mineDay.ids.length && record.ids.length) {
+        mineDay.ids = record.ids;
+        mineDay.targets = record.targets;
+        changed = true;
+      }
+      Object.keys(record.flags || {}).forEach((f) => {
+        if (!mineDay.flags[f]) { mineDay.flags[f] = true; changed = true; }
+      });
+      if (record.bonusAt && !mineDay.bonusAt) { mineDay.bonusAt = record.bonusAt; changed = true; }
+    });
+    return changed;
+  }
+
+  /** 画面の操作で満たすミッション（先を眺めた・昔のメモを開いた）に印を付ける */
+  markMissionFlag(name, day = todayKey()) {
+    if (!this.settings.missionsEnabled) return false;
+    const record = this._dayRecord(day);
+    if (record.flags[name]) return false;
+    record.flags[name] = true;
+    this.commit({ type: 'missions:flag', day, name });
+    return true;
+  }
+
+  /** 祝いを出したことを覚えておく（1 日に 1 回だけ） */
+  markCelebrated(day = todayKey()) {
+    const record = this._dayRecord(day);
+    if (record.celebrated) return false;
+    record.celebrated = true;
+    this.commit({ type: 'missions:celebrated', day });
+    return true;
   }
 
   /* ---------------------------------------------------------- bulk data */
