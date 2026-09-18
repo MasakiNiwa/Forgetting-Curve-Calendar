@@ -574,6 +574,8 @@ export function disposeNoteEditor() {
 
 function scheduleSection(store, state, note, { onChange }) {
   const box = h('div', {});
+  // シードを振り直しても閉じないよう、開閉の状態を覚えておく
+  let detailsOpen = false;
 
   const apply = () => {
     if (!note) { onChange?.(); return; }
@@ -613,7 +615,11 @@ function scheduleSection(store, state, note, { onChange }) {
       intervals.length ? h('div', { class: 'field__hint' },
         `合計 ${intervals.length} 回・最後は ${formatDuration(intervals[intervals.length - 1])}後の `
         + `${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`) : null,
-      intervals.length ? h('details', { class: 'editor__details' },
+      intervals.length ? h('details', {
+        class: 'editor__details',
+        open: detailsOpen,
+        onToggle: (e) => { detailsOpen = e.target.open; },
+      },
         h('summary', {}, '分散と起点日'),
         h('div', { class: 'spread-row', style: { marginTop: '10px' } },
           h('div', { style: { flex: '1' } }, h('div', { class: 'field__label' }, '復習日の分散')),
@@ -640,6 +646,16 @@ function scheduleSection(store, state, note, { onChange }) {
             className: 'icon-btn icon-btn--filled',
             onClick: () => { state.seed = randomSeed(); apply(); render(); },
           })) : null,
+        h('div', { class: 'spread-sample', style: { marginTop: '12px' } },
+          ...intervals.slice(0, 4).map((d, i) => h('div', { class: 'spread-sample__row' },
+            h('span', { class: 'spread-sample__label' }, `${i + 1}回目`),
+            h('span', { class: 'spread-sample__value' },
+              `${formatDuration(d)}後　${formatSmart(addDays(state.anchorDate, d))}`))),
+          h('div', { class: 'spread-sample__row' },
+            h('span', { class: 'spread-sample__label' }, `${intervals.length}回目`),
+            h('span', { class: 'spread-sample__value' },
+              `${formatDuration(intervals[intervals.length - 1])}後　`
+              + `${formatSmart(addDays(state.anchorDate, intervals[intervals.length - 1]))}`))),
         h('div', { class: 'field__hint', style: { marginTop: '10px' } },
           note && !store.canChangeAnchor(note)
             ? `起点日 ${formatLong(state.anchorDate)}（記録があるため変更できません）`

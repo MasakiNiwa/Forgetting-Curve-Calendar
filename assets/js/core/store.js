@@ -782,6 +782,36 @@ export class Store {
     return JSON.parse(JSON.stringify(this.data));
   }
 
+  /** バックアップを保存したことを記録する */
+  markBackedUp(at = new Date().toISOString()) {
+    this.data.meta.lastBackupAt = at;
+    this.commit({ type: 'backup:saved' });
+    return at;
+  }
+
+  /**
+   * バックアップの状況。
+   * 「最後に保存してから何日たったか」をアプリバーに出すために使う。
+   */
+  backupStatus(base = todayKey()) {
+    const last = this.data.meta.lastBackupAt || null;
+    const notes = this.data.notes.length;
+    if (!last) {
+      return {
+        last: null,
+        days: null,
+        notes,
+        // メモがあるのに一度も保存していなければ、そっと促す
+        stale: notes > 0,
+        changedSince: notes > 0,
+      };
+    }
+    const days = Math.max(0, diffDays(localDayOf(last), base));
+    // 最後のバックアップ以降に書き換えがあったか
+    const changedSince = (this.data.meta.updatedAt || '') > last;
+    return { last, days, notes, stale: changedSince && days >= 7, changedSince };
+  }
+
   /**
    * バックアップの復元。
    * @param {object} raw

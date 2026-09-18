@@ -7,7 +7,8 @@ import { openExportDialog } from '../exportDialog.js';
 import {
   MAX_INTERVAL_DAYS, PRESETS, SPREADS, getPreset, getSpread, sanitizeIntervals, spreadIntervals,
 } from '../../core/curve.js';
-import { FORMATS, buildFilename, downloadText, readFileAsText, serializeBackup } from '../../core/exporter.js';
+import { FORMATS } from '../../core/exporter.js';
+import { backupLabel, pickBackupFile, saveBackupFile } from '../backup.js';
 import { APP_VERSION } from '../../core/config.js';
 import { formatDateTime, formatDuration } from '../../core/date.js';
 
@@ -235,24 +236,6 @@ function customIntervalEditor(store) {
 }
 
 function renderDataCard(store) {
-  const fileInput = h('input', {
-    type: 'file',
-    accept: 'application/json,.json',
-    style: { display: 'none' },
-    onChange: async (e) => {
-      const file = e.target.files?.[0];
-      e.target.value = '';
-      if (!file) return;
-      try {
-        const raw = JSON.parse(await readFileAsText(file));
-        openRestoreDialog(store, raw);
-      } catch (err) {
-        console.error(err);
-        toast('ファイルを読み込めませんでした（JSON 形式ではありません）');
-      }
-    },
-  });
-
   return h('section', { class: 'card' },
     h('div', { class: 'card__title' },
       h('span', { html: icon('data', { size: 18 }), style: { display: 'flex' } }), 'データ'),
@@ -265,25 +248,27 @@ function renderDataCard(store) {
         h('span', {}, store.storageWarning))
       : null,
 
+    h('div', { class: 'backup-status', style: { marginBottom: '12px' } },
+      h('span', {
+        class: `backup-status__dot ${store.backupStatus().stale ? 'backup-status__dot--stale' : ''}`,
+      }),
+      h('div', {},
+        h('div', { class: 'backup-status__label' }, backupLabel(store.backupStatus())),
+        store.backupStatus().last
+          ? h('div', { class: 'field__hint' }, formatDateTime(store.backupStatus().last))
+          : null)),
+
     h('div', { class: 'note-card__actions', style: { marginTop: '0' } },
       button('バックアップを保存', {
         className: 'btn',
         icon: icon('download', { size: 18 }),
-        onClick: () => {
-          downloadText(
-            buildFilename('forgetting-curve-backup', 'json'),
-            serializeBackup(store.exportData()),
-            'application/json',
-          );
-          toast('バックアップを保存しました');
-        },
+        onClick: () => saveBackupFile(store),
       }),
       button('バックアップから復元', {
         className: 'btn btn--tonal',
         icon: icon('upload', { size: 18 }),
-        onClick: () => fileInput.click(),
+        onClick: () => pickBackupFile(store),
       })),
-    fileInput,
 
     h('div', { class: 'divider' }),
 
@@ -329,47 +314,6 @@ function renderDataCard(store) {
         toast('すべてのデータを削除しました');
       },
     }));
-}
-
-function openRestoreDialog(store, raw) {
-  const count = Array.isArray(raw?.notes) ? raw.notes.length : 0;
-  openDialog({
-    title: 'バックアップから復元',
-    variant: 'alert',
-    content: h('div', {},
-      h('p', { style: { color: 'var(--fcc-on-surface-variant)' } },
-        `${count} 件のメモが見つかりました。復元方法を選んでください。`),
-      h('p', { class: 'field__hint' },
-        '「置き換え」は今のデータを消して復元します。「追加」は今のデータを残したまま、未登録のメモだけを取り込みます。')),
-    actions: [
-      { label: 'キャンセル', className: 'btn btn--text', onClick: (close) => close() },
-      {
-        label: '追加',
-        className: 'btn btn--tonal',
-        onClick: (close) => {
-          const res = store.importData(raw, 'merge');
-          toast(`${res.imported} 件を追加しました（重複 ${res.skipped} 件はスキップ）`);
-          close();
-        },
-      },
-      {
-        label: '置き換え',
-        className: 'btn',
-        onClick: async (close) => {
-          const ok = await confirmDialog({
-            title: '置き換えますか？',
-            message: '今のメモと復習の記録は削除されます。',
-            confirmLabel: '置き換える',
-            danger: true,
-          });
-          if (!ok) return;
-          const res = store.importData(raw, 'replace');
-          toast(`${res.imported} 件を復元しました`);
-          close();
-        },
-      },
-    ],
-  });
 }
 
 /* ------------------------------------------------------------------ */

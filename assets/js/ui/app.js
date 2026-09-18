@@ -3,15 +3,15 @@ import { h, clear, iconButton } from './dom.js';
 import { icon } from './icons.js';
 import { toast } from './overlays.js';
 import { openNoteEditor } from './editor.js';
-import { renderCalendar, focusDate } from './views/calendar.js';
+import { renderCalendar } from './views/calendar.js';
 import { renderNotes } from './views/notes.js';
 import { renderStats } from './views/stats.js';
 import { renderSettings } from './views/settings.js';
 import { renderHelp } from './views/help.js';
 import { currentRoute, navigate, parseHash, startRouter } from './router.js';
 import { renderNoteEditor, disposeNoteEditor } from './views/noteEditor.js';
+import { openBackupSheet, backupLabel } from './backup.js';
 import { APP_NAME, APP_TAGLINE } from '../core/config.js';
-import { todayKey } from '../core/date.js';
 
 const ROUTES = [
   { id: 'calendar', label: 'カレンダー', iconName: 'calendar', render: renderCalendar },
@@ -40,6 +40,25 @@ export function mountApp(store, root) {
     nav.appendChild(item);
   });
 
+  // データは端末内にしかないので、バックアップへの入口は常に見える場所に置く
+  const backupAge = h('span', { class: 'appbar__backup-age' });
+  const backupButton = h('button', {
+    type: 'button',
+    class: 'appbar__backup',
+    onClick: () => openBackupSheet(store),
+  }, h('span', { class: 'appbar__backup-icon', html: icon('download') }), backupAge);
+
+  function updateBackupBadge() {
+    const status = store.backupStatus();
+    backupButton.dataset.stale = status.stale ? 'true' : '';
+    // 間が空いているときは、日数をその場に出す（開かなくても分かるように）
+    backupAge.textContent = status.stale && status.days !== null ? `${status.days}日` : '';
+    const label = `バックアップ（${backupLabel(status)}）`;
+    backupButton.setAttribute('aria-label', label);
+    backupButton.title = label;
+  }
+  updateBackupBadge();
+
   const appbar = h('header', { class: 'appbar' },
     h('div', { class: 'appbar__brand' },
       h('span', { class: 'appbar__logo', html: icon('curve', { size: 26 }), style: { display: 'flex' } }),
@@ -47,10 +66,7 @@ export function mountApp(store, root) {
         h('div', { class: 'appbar__title' }, APP_NAME),
         h('div', { class: 'appbar__tagline' }, APP_TAGLINE))),
     h('div', { class: 'appbar__spacer' }),
-    iconButton(icon('target'), {
-      label: '今日へ',
-      onClick: () => { focusDate(todayKey()); navigate('calendar'); store.emit({ type: 'view:refresh' }); },
-    }));
+    backupButton);
 
   const fab = h('button', {
     class: 'fab',
@@ -110,6 +126,7 @@ export function mountApp(store, root) {
 
   store.subscribe((event) => {
     if (event?.type === 'error') toast(event.message);
+    updateBackupBadge();
     // 編集画面は自分で描画を持っているので、保存のたびに作り直さない
     if (document.documentElement.dataset.mode === 'editor') return;
     render();
