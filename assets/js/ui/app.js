@@ -117,7 +117,7 @@ export function mountApp(store, root) {
       }));
       main.scrollTop = 0;
       shownRoute = null;
-      document.title = `メモ｜${APP_NAME}`;
+      // タブのタイトルは編集画面が自分で出す（いま書いているメモの名前）
       return;
     }
 

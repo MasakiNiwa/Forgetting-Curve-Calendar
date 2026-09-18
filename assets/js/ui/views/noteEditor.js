@@ -19,6 +19,7 @@ import {
   sanitizeIntervals, spreadIdOf, spreadIntervals,
 } from '../../core/curve.js';
 import { displayTitle } from '../../core/models.js';
+import { APP_NAME } from '../../core/config.js';
 import { clearDraft, draftKey, isEmptyDraft, loadDraft, saveDraft } from '../../core/drafts.js';
 import {
   addDays, formatDateTime, formatDuration, formatLong, formatRelative, formatSmart, todayKey,
@@ -98,6 +99,12 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   let revision = 0;
   /** 保存は必ず 1 本の列に並べる（同時に走らせない） */
   let chain = Promise.resolve({ ok: true });
+  /** 直前の本文の長さ（高さの測り直しを減らすために覚えておく） */
+  let lastLength = -1;
+  /** カーソル位置を測るための影 */
+  let mirror = null;
+  /** ステータスバーの更新待ち */
+  let statsTimer = null;
 
   /* ---------------------------------------------------------- 画面 */
 
@@ -108,18 +115,67 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     value: state.title,
     'aria-label': 'タイトル',
     onInput: (e) => { state.title = e.target.value; markDirty(); },
+    // Enter / ↓ で手掛かりへ、そのまま書き進められるようにする
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); cueInput.focus(); }
+    },
   });
+
+  // 手掛かりは復習の主役なので、開いた瞬間に必ず目に入る場所へ置く
+  const cueInput = h('input', {
+    class: 'ed__cue-input',
+    type: 'text',
+    placeholder: '思い出すための手掛かり',
+    value: state.cue,
+    'aria-label': '思い出すための手掛かり',
+    onInput: (e) => { state.cue = e.target.value; markDirty(); },
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        editor.focus({ start: 0, end: 0 });
+      }
+      if (e.key === 'ArrowUp') { e.preventDefault(); titleInput.focus(); }
+    },
+  });
+
+  // 書き方は、手掛かりに触れたときだけそっと出す（ふだんは静かにしておく）
+  const cueHint = h('div', { class: 'ed__cue-hint', hidden: true },
+    '復習では、まずこれだけが出ます。例）減価償却の3つの方法は？');
+  cueInput.addEventListener('focus', () => { cueHint.hidden = false; });
+  cueInput.addEventListener('blur', () => { cueHint.hidden = true; });
+
+  const cueRow = h('div', { class: 'ed__cue' },
+    h('span', { class: 'ed__cue-icon', html: icon('target', { size: 16 }) }),
+    cueInput);
 
   const textarea = h('textarea', {
     class: 'ed__body',
     placeholder: '書き始めてください。',
     spellcheck: 'false',
     'aria-label': '本文',
+    onKeyDown: (e) => {
+      // 本文の先頭で ↑ を押したら、手掛かり・タイトルへ戻れる
+      if (e.key === 'ArrowUp' && textarea.selectionStart === 0 && textarea.selectionEnd === 0) {
+        e.preventDefault();
+        cueInput.focus();
+      }
+    },
   });
   textarea.value = state.body;
 
+  // タイトル・手掛かり・本文は 1 枚の紙として一緒にスクロールする
+  const docInner = h('div', { class: 'ed__doc-inner' },
+    h('div', { class: 'ed__head' }, titleInput, cueRow, cueHint),
+    textarea);
+  const doc = h('div', { class: 'ed__doc' }, docInner);
+
   const statusText = h('span', { class: 'ed__status-text' });
-  const statusCount = h('span', { class: 'ed__status-count' });
+  const statusCount = h('button', {
+    type: 'button',
+    class: 'ed__status-count',
+    title: '文字数の詳細',
+    onClick: () => openCountSheet(),
+  });
   const statusCaret = h('span', { class: 'ed__status-caret' });
 
   const undoBtn = iconButton(icon('undo'), { label: '元に戻す', onClick: () => editor.run('undo') });
@@ -131,10 +187,12 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   const editorEl = h('div', { class: 'ed' },
     h('header', { class: 'ed__toolbar' },
       iconButton(icon('back'), { label: '一覧へ戻る', onClick: () => leave() }),
-      titleInput,
+      h('div', { class: 'ed__toolbar-gap' }),
       undoBtn,
       redoBtn,
+      iconButton(icon('list'), { label: '見出しへ移動', onClick: () => openOutline() }),
       iconButton(icon('search'), { label: 'メモ内を検索', onClick: () => toggleFind() }),
+      iconButton(icon('text'), { label: '表示設定', onClick: () => openDisplaySettings(store) }),
       iconButton(icon('info'), { label: 'メモ情報', onClick: () => openInfoPanel() }),
       iconButton(icon('more'), { label: 'その他', onClick: () => openEditorMenu() })),
     restored ? h('div', { class: 'banner banner--info ed__banner' },
@@ -146,8 +204,10 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
           clearDraft(key);
           state.body = existing?.body ?? '';
           state.title = existing?.title ?? '';
+          state.cue = existing?.cue ?? '';
           editor.load(state.body);
           titleInput.value = state.title;
+          cueInput.value = state.cue;
           e.target.closest('.ed__banner').remove();
         },
       })) : null,
@@ -156,7 +216,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       h('span', { html: icon('branch', { size: 16 }), style: { display: 'flex' } }),
       h('span', {}, `「${displayTitle(parent)}」への追加メモ`)) : null,
     findBar,
-    h('div', { class: 'ed__body-wrap' }, textarea),
+    doc,
     shortcutBar,
     h('footer', { class: 'ed__status' }, statusText, h('span', { style: { flex: '1' } }), statusCaret, statusCount));
 
@@ -167,8 +227,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       state.body = text;
       updateStats();
       updateHistoryButtons();
+      autoGrow();
       if (!silent && !composing) markDirty();
-      else if (composing) updateStats();
     },
     onSelectionChange: () => updateStats(),
     // Esc は、まず検索バーを閉じる。開いていなければ Tab でフォーカスを移せるようにする
@@ -187,15 +247,85 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   });
 
   buildShortcuts();
-  updateStats();
+  updateStats({ immediate: true });
   updateHistoryButtons();
+  autoGrow();
+  updateDocumentTitle();
   setStatus(existing ? '保存済み' : '新しいメモ');
+
+  /* ------------------------------------------------- 1 枚の紙として扱う */
+
+  /**
+   * 本文の高さを中身に合わせて伸ばす。
+   * 本文の中だけをスクロールさせず、タイトル・手掛かりと一緒に動かすため。
+   *
+   * 長いメモでも重くならないよう、増えているあいだは測り直さず、
+   * はみ出した分だけ足す（減ったときと画面が変わったときだけ測り直す）。
+   */
+  function autoGrow({ force = false } = {}) {
+    const head = docInner.querySelector('.ed__head');
+    const min = Math.max(240, doc.clientHeight - (head?.offsetHeight || 0) - 64);
+    const length = textarea.value.length;
+    const grew = length >= lastLength;
+    lastLength = length;
+
+    if (!force && grew && textarea.style.height) {
+      if (textarea.scrollHeight > textarea.clientHeight) {
+        textarea.style.height = `${Math.max(textarea.scrollHeight, min)}px`;
+      }
+      return;
+    }
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.max(textarea.scrollHeight, min)}px`;
+  }
+
+  /** カーソルの位置（本文の先頭からの高さ）を測る */
+  function caretOffsetTop() {
+    if (!mirror) {
+      mirror = h('div', { 'aria-hidden': 'true', class: 'ed__mirror' });
+      document.body.appendChild(mirror);
+    }
+    const cs = window.getComputedStyle(textarea);
+    [
+      'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
+      'whiteSpace', 'wordBreak', 'paddingTop', 'paddingLeft', 'paddingRight', 'textIndent',
+    ].forEach((key) => { mirror.style[key] = cs[key]; });
+    mirror.style.width = `${textarea.clientWidth}px`;
+    const upto = textarea.value.slice(0, textarea.selectionStart);
+    mirror.textContent = upto;
+    const marker = h('span', {}, '\u200b');
+    mirror.appendChild(marker);
+    return marker.offsetTop;
+  }
+
+  /** 書いている行が隠れないように、必要なときだけスクロールする */
+  function scrollCaretIntoView({ margin = 56 } = {}) {
+    if (document.activeElement !== textarea) return;
+    const docRect = doc.getBoundingClientRect();
+    const caretY = textarea.getBoundingClientRect().top + caretOffsetTop();
+    const lineH = parseFloat(window.getComputedStyle(textarea).lineHeight) || 24;
+    if (caretY < docRect.top + margin) {
+      doc.scrollTop -= (docRect.top + margin) - caretY;
+    } else if (caretY + lineH > docRect.bottom - margin) {
+      doc.scrollTop += (caretY + lineH) - (docRect.bottom - margin);
+    }
+  }
+
+  /** 表示設定や画面サイズが変わったときに、レイアウトを整え直す */
+  function refreshLayout() {
+    autoGrow({ force: true });
+    scrollCaretIntoView();
+  }
+
+  const onWindowResize = () => refreshLayout();
+  window.addEventListener('resize', onWindowResize);
 
   /* ---------------------------------------------------------- 保存 */
 
   function markDirty() {
     dirty = true;
     revision += 1;
+    updateDocumentTitle();
     setStatus('未保存');
     if (state.id || !isEmptyDraft(state)) {
       // 既存メモは空にした状態も下書きに残す（古い本文が復活しないように）
@@ -303,7 +433,14 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
           toast(ok ? 'コピーしました' : 'コピーできませんでした');
         },
       }));
-    editorEl.querySelector('.ed__body-wrap').insertAdjacentElement('beforebegin', box);
+    editorEl.querySelector('.ed__doc').insertAdjacentElement('beforebegin', box);
+  }
+
+  /** タブのタイトルを、いま書いているメモに合わせる */
+  function updateDocumentTitle() {
+    const first = (state.title || state.body.split('\n').find((l) => l.trim()) || '').trim();
+    const name = first ? (first.length > 30 ? `${first.slice(0, 30)}…` : first) : 'メモ';
+    document.title = `${name}｜${APP_NAME}`;
   }
 
   function setStatus(text, tone) {
@@ -311,13 +448,23 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     statusText.dataset.tone = tone || '';
   }
 
-  function updateStats() {
-    const stats = editor.stats();
-    statusCount.textContent = stats.selected
-      ? `${stats.selected} 字を選択 / ${stats.chars} 字`
-      : `${stats.chars} 字・${stats.lines} 行`;
-    const { line, column } = editor.caretPosition();
-    statusCaret.textContent = `${line}:${column}`;
+  /**
+   * ステータスバーの数字。
+   * 入力のたびに数え直すと長いメモで重くなるので、少し間引いて出す。
+   */
+  function updateStats({ immediate = false } = {}) {
+    if (statsTimer) return;
+    const run = () => {
+      statsTimer = null;
+      const stats = editor.quickStats();
+      statusCount.textContent = stats.selected
+        ? `${stats.selected} 字を選択 / ${stats.chars} 字`
+        : `${stats.chars} 字・${stats.lines} 行`;
+      const { line, column } = editor.caretPosition();
+      statusCaret.textContent = `${line}:${column}`;
+    };
+    if (immediate) { run(); return; }
+    statsTimer = setTimeout(run, 150);
   }
 
   function updateHistoryButtons() {
@@ -373,6 +520,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     if (at === -1) { toast('見つかりませんでした'); return; }
     editor.focus({ start: at, end: at + query.length });
     updateStats();
+    requestAnimationFrame(() => scrollCaretIntoView({ margin: 100 }));
   }
 
   function replaceCurrent() {
@@ -396,10 +544,80 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     toast(`${count} か所を置き換えました（元に戻せます）`);
   }
 
+  /* ------------------------------------------------- 見出しと文字数 */
+
+  /** 「# 」で始まる行を拾う（長いメモの中を移動するため） */
+  function outline() {
+    const lines = editor.text.split('\n');
+    const items = [];
+    let at = 0;
+    lines.forEach((line) => {
+      const match = line.match(/^(#{1,6})\s+(.+)$/);
+      if (match) items.push({ level: match[1].length, text: match[2].trim(), at });
+      at += line.length + 1;
+    });
+    return items;
+  }
+
+  function openOutline() {
+    const items = outline();
+    if (!items.length) {
+      openMenu({
+        title: '見出し',
+        items: [{
+          label: '見出しを作る',
+          icon: icon('heading', { size: 20 }),
+          description: '行の先頭に「# 」を付けると、ここから移動できます',
+          onClick: () => { editor.run('heading'); editor.el.focus({ preventScroll: true }); },
+        }],
+      });
+      return;
+    }
+    openMenu({
+      title: '見出しへ移動',
+      items: items.map((item) => ({
+        label: `${'　'.repeat(item.level - 1)}${item.text}`,
+        icon: icon('heading', { size: 20 }),
+        onClick: () => {
+          editor.focus({ start: item.at, end: item.at });
+          requestAnimationFrame(() => scrollCaretIntoView({ margin: 120 }));
+        },
+      })),
+    });
+  }
+
+  function openCountSheet() {
+    const text = editor.text;
+    const stats = editor.stats();
+    const paragraphs = text.split(/\n\s*\n/).filter((p) => p.trim()).length;
+    const words = (text.match(/[A-Za-z0-9_'-]+/g) || []).length;
+    // 日本語はおよそ 500 字／分で読む目安
+    const minutes = Math.max(1, Math.round(stats.chars / 500));
+    const row = (label, value) => h('div', { class: 'version-row' },
+      h('span', { class: 'version-row__key' }, label),
+      h('span', { class: 'version-row__value' }, value));
+
+    openSheet({
+      title: '文字数',
+      content: h('div', {},
+        h('h2', { class: 'daypanel__date', style: { marginBottom: '8px' } }, '文字数'),
+        row('文字数', `${stats.chars} 字`),
+        row('空白を除く', `${stats.charsNoSpace} 字`),
+        row('行', `${stats.lines} 行`),
+        row('段落', `${paragraphs} 段落`),
+        words ? row('英単語', `${words} 語`) : null,
+        row('読む目安', `約 ${minutes} 分`),
+        stats.selected ? row('選択中', `${stats.selected} 字`) : null,
+        h('div', { class: 'field__hint', style: { marginTop: '10px' } },
+          '読む目安は 1 分あたり 500 字で計算しています。')),
+    });
+  }
+
   /* ---------------------------------------------------------- ボタン類 */
 
   function buildShortcuts() {
     const items = [
+      { id: 'heading', label: '見出し' },
       { id: 'bullet', label: 'リスト' },
       { id: 'checkbox', label: 'チェック' },
       { id: 'toggleCheck', label: '完了' },
@@ -441,6 +659,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         { label: '行を複製', icon: icon('copy', { size: 20 }), onClick: () => editor.run('duplicateLine') },
         { label: '行を削除', icon: icon('trash', { size: 20 }), onClick: () => editor.run('deleteLine') },
         { label: '検索と置換', icon: icon('replace', { size: 20 }), onClick: () => toggleFind(true) },
+        { label: '見出しへ移動', icon: icon('heading', { size: 20 }), onClick: () => openOutline() },
+        { label: '文字数', icon: icon('data', { size: 20 }), onClick: () => openCountSheet() },
         { divider: true },
         {
           label: '本文をコピー',
@@ -459,8 +679,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     openMenu({
       title: state.title || '（無題のメモ）',
       items: [
-        { label: '表示設定', icon: icon('text', { size: 20 }), description: '文字サイズと折り返し', onClick: () => openDisplaySettings(store) },
-        { label: 'メモ情報', icon: icon('info', { size: 20 }), description: '手掛かり・タグ・復習の設定', onClick: () => openInfoPanel() },
+        { label: '表示設定', icon: icon('text', { size: 20 }), description: '文字サイズ・行間・集中モード', onClick: () => openDisplaySettings(store) },
+        { label: 'メモ情報', icon: icon('info', { size: 20 }), description: 'タグ・復習の設定・復習の記録', onClick: () => openInfoPanel() },
         // メモ帳として使う人が、復習を付けずに書き留められるようにする
         state.presetId === 'none' || note?.status === 'inbox' ? {
           label: '復習を始める',
@@ -526,13 +746,6 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     const note = state.id ? store.getNote(state.id) : null;
     const content = h('div', { class: 'ed-info' });
 
-    const cueInput = h('input', {
-      class: 'input',
-      type: 'text',
-      placeholder: '例）減価償却の3つの方法は？',
-      value: state.cue,
-      onInput: (e) => { state.cue = e.target.value; markDirty(); },
-    });
     const tagsInput = h('input', {
       class: 'input',
       type: 'text',
@@ -544,10 +757,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
     content.append(
       h('h2', { class: 'daypanel__date', style: { marginBottom: '12px' } }, 'メモ情報'),
-      h('label', { class: 'field' },
-        h('span', { class: 'field__label' }, '思い出すための手掛かり'),
-        cueInput,
-        h('span', { class: 'field__hint' }, '復習ではこれだけが先に出ます。空欄ならタイトル（本文の1行目）。')),
+      h('div', { class: 'field__hint', style: { marginBottom: '12px' } },
+        '「思い出すための手掛かり」は、本文の上（タイトルの下）で直接書けます。'),
       h('label', { class: 'field' },
         h('span', { class: 'field__label' }, 'タグ'),
         tagsInput,
@@ -603,6 +814,10 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       event.preventDefault();
       toggleFind(true);
     }
+    if (mod && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      openOutline();
+    }
     if (event.key === 'Escape' && !findBar.hidden) {
       toggleFind(false);
     }
@@ -611,10 +826,12 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   // キーボードが出て領域が縮んだとき、入力中の行を見失わないようにする
   const onViewportResize = () => {
+    refreshLayout();
     if (document.activeElement !== textarea) return;
     const { start, end } = editor.selection;
     requestAnimationFrame(() => {
       try { textarea.setSelectionRange(start, end); } catch { /* noop */ }
+      scrollCaretIntoView();
     });
   };
   window.visualViewport?.addEventListener('resize', onViewportResize);
@@ -630,31 +847,43 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   active = {
     dispose() {
       clearTimeout(saveTimer);
+      clearTimeout(statsTimer);
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('resize', onWindowResize);
       window.visualViewport?.removeEventListener('resize', onViewportResize);
+      mirror?.remove();
+      mirror = null;
       if (state.id) {
         positions.set(state.id, {
           start: editor.selection.start,
           end: editor.selection.end,
-          scroll: textarea.scrollTop,
+          scroll: doc.scrollTop,
         });
       }
       if (dirty) save();
       active = null;
     },
+    refreshLayout,
   };
 
   // 前回の続きから書けるようにする
   setTimeout(() => {
+    applyDisplaySettings(store, textarea);
+    autoGrow();
     const saved = state.id ? positions.get(state.id) : null;
     if (saved) {
       editor.focus({ start: saved.start, end: saved.end });
-      textarea.scrollTop = saved.scroll || 0;
-    } else {
+      doc.scrollTop = saved.scroll || 0;
+    } else if (state.body) {
       editor.focus({ start: state.body.length, end: state.body.length });
+      scrollCaretIntoView();
+    } else if (!state.title) {
+      // 新しいメモは、まずタイトルから書き始められるようにする
+      titleInput.focus({ preventScroll: true });
+    } else {
+      editor.focus({ start: 0, end: 0 });
     }
-    applyDisplaySettings(store, textarea);
   }, 40);
 
   return editorEl;
@@ -830,16 +1059,20 @@ function scheduleSection(store, state, note, { onChange }) {
 const DISPLAY_KEY = 'fcc.editor.display';
 
 export function readDisplaySettings() {
+  const fallback = { fontSize: 16, lineHeight: 1.9, wrap: true, mono: false, bare: false };
   try {
     const raw = window.localStorage.getItem(DISPLAY_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
     return {
-      fontSize: Number(parsed.fontSize) || 16,
+      fontSize: Number(parsed.fontSize) || fallback.fontSize,
+      lineHeight: Number(parsed.lineHeight) || fallback.lineHeight,
       wrap: parsed.wrap !== false,
       mono: parsed.mono === true,
+      // 集中モード：ショートカットバーを隠して、本文だけにする
+      bare: parsed.bare === true,
     };
   } catch {
-    return { fontSize: 16, wrap: true, mono: false };
+    return { ...fallback };
   }
 }
 
@@ -852,9 +1085,14 @@ function writeDisplaySettings(value) {
 function applyDisplaySettings(store, textarea) {
   const d = readDisplaySettings();
   textarea.style.fontSize = `${d.fontSize}px`;
+  textarea.style.lineHeight = String(d.lineHeight);
   textarea.style.whiteSpace = d.wrap ? 'pre-wrap' : 'pre';
   textarea.style.overflowX = d.wrap ? 'hidden' : 'auto';
   textarea.style.fontFamily = d.mono ? 'var(--fcc-font-mono)' : 'var(--fcc-font)';
+  const root = textarea.closest('.ed');
+  if (root) root.dataset.bare = d.bare ? 'true' : '';
+  // 折り返しや文字サイズが変わると行数も変わるので、高さを組み直す
+  active?.refreshLayout?.();
 }
 
 function openDisplaySettings(store) {
@@ -873,6 +1111,15 @@ function openDisplaySettings(store) {
           'aria-pressed': String(d.fontSize === size),
           onClick: () => { writeDisplaySettings({ ...d, fontSize: size }); applyDisplaySettings(store, textarea); render(); },
         }, `${size}px`))),
+      h('div', { class: 'field__label', style: { marginTop: '14px' } }, '行の間隔'),
+      h('div', { class: 'filter-row' },
+        ...[{ v: 1.7, label: '詰める' }, { v: 1.9, label: 'ふつう' }, { v: 2.2, label: 'ゆったり' }]
+          .map(({ v, label }) => h('button', {
+            type: 'button',
+            class: 'chip',
+            'aria-pressed': String(d.lineHeight === v),
+            onClick: () => { writeDisplaySettings({ ...d, lineHeight: v }); applyDisplaySettings(store, textarea); render(); },
+          }, label))),
       h('div', { class: 'divider' }),
       h('label', { class: 'switch' },
         h('span', { class: 'switch__text' },
@@ -895,6 +1142,18 @@ function openDisplaySettings(store) {
             type: 'checkbox',
             checked: d.mono,
             onChange: (e) => { writeDisplaySettings({ ...d, mono: e.target.checked }); applyDisplaySettings(store, textarea); },
+          }),
+          h('span', { class: 'switch__track' }),
+          h('span', { class: 'switch__thumb' }))),
+      h('label', { class: 'switch' },
+        h('span', { class: 'switch__text' },
+          h('span', { class: 'switch__title' }, '集中モード'),
+          h('span', { class: 'switch__desc' }, 'ショートカットバーを隠して、本文だけにします。')),
+        h('span', { class: 'switch__control' },
+          h('input', {
+            type: 'checkbox',
+            checked: d.bare,
+            onChange: (e) => { writeDisplaySettings({ ...d, bare: e.target.checked }); applyDisplaySettings(store, textarea); },
           }),
           h('span', { class: 'switch__track' }),
           h('span', { class: 'switch__thumb' }))),

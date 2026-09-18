@@ -267,3 +267,33 @@ test('editor: Esc のあとの Tab はフォーカス移動に使う', () => {
   assert.equal(editor.handleKey(key({ key: 'Tab', shiftKey: false })), true);
   assert.equal(editor.text, '  本文');
 });
+
+/* ------------------------------------------------- v0.7: 見出しと軽い集計 */
+
+test('editor: 見出しの付け外しができる', () => {
+  const { el, editor } = setup('第1章\n本文');
+  el.setSelectionRange(0, 0);
+  editor.run('heading');
+  assert.equal(editor.text, '# 第1章\n本文');
+  editor.run('heading');
+  assert.equal(editor.text, '第1章\n本文', 'もう一度押すと外れる');
+
+  // 空行なら、記号を置いてすぐ書ける
+  const { el: el2, editor: ed2 } = setup('本文\n');
+  el2.setSelectionRange(3, 3);
+  ed2.run('heading');
+  assert.equal(ed2.text, '本文\n# ');
+  assert.equal(el2.selectionStart, ed2.text.length);
+});
+
+test('editor: 軽い集計は文字列を作り直さずに数える', () => {
+  const { el, editor } = setup('いち\nに\nさん');
+  el.setSelectionRange(0, 2);
+  const quick = editor.quickStats();
+  assert.equal(quick.chars, editor.text.length);
+  assert.equal(quick.lines, 3);
+  assert.equal(quick.selected, 2);
+
+  const { editor: empty } = setup('');
+  assert.deepEqual(empty.quickStats(), { chars: 0, lines: 0, selected: 0 });
+});
