@@ -1265,3 +1265,53 @@ button, input, textarea, select { font: inherit; color: inherit; }
   .ed__body { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
   .ed__toolbar, .ed__status, .ed__shortcuts { padding-left: 16px; padding-right: 16px; }
 }
+
+/* --- バックアップの状態 --- */
+.appbar__backup {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--fcc-radius-full);
+  background: transparent;
+  color: var(--fcc-on-surface-variant);
+  cursor: pointer;
+  transition: background var(--fcc-dur-short) var(--fcc-ease-standard);
+}
+.appbar__backup:hover { background: color-mix(in srgb, var(--fcc-on-surface) 8%, transparent); }
+.appbar__backup[data-stale="true"] {
+  background: var(--fcc-warning-container);
+  color: var(--fcc-on-surface);
+}
+.appbar__backup-age { font-size: .72rem; font-weight: 700; }
+.appbar__backup-icon { display: flex; }
+/* 一度も保存していないときは、日数が出せないので印だけ付ける */
+.appbar__backup[data-stale="true"] .appbar__backup-age:empty::after {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fcc-warning);
+}
+.backup-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-surface-container);
+}
+.backup-status__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fcc-success);
+  margin-top: 5px;
+  flex: none;
+}
+.backup-status__dot--stale { background: var(--fcc-warning); }
+.backup-status__label { font-weight: 650; font-size: .9rem; }

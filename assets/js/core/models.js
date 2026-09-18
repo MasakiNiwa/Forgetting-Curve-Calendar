@@ -54,7 +54,7 @@ export function createEmptyData() {
     notes: [],
     deleted: {},
     settings: { ...DEFAULT_SETTINGS },
-    meta: { createdAt: now, updatedAt: now, appVersion: APP_VERSION },
+    meta: { createdAt: now, updatedAt: now, appVersion: APP_VERSION, lastBackupAt: null },
   };
 }
 
@@ -275,6 +275,8 @@ export function normalizeData(raw) {
       updatedAt: raw.meta?.updatedAt || new Date().toISOString(),
       appVersion: APP_VERSION,
       saveToken: raw.meta?.saveToken ?? null,
+      // 最後にバックアップを保存した時刻（アプリバーの表示に使う）
+      lastBackupAt: raw.meta?.lastBackupAt ?? null,
     },
   };
 }

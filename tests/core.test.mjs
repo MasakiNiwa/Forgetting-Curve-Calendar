@@ -790,3 +790,31 @@ test('store: 本文の前後の空白や改行を勝手に削らない', async (
   store.updateNote(note.id, { body: '一行目\n\n二行目\n' });
   assert.equal(store.getNote(note.id).body, '一行目\n\n二行目\n');
 });
+
+/* ------------------------------------------------------- v0.5.2: バックアップ */
+
+test('store: バックアップからの経過が分かる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+
+  // メモが無いうちは急かさない
+  assert.equal(store.backupStatus().stale, false);
+  assert.equal(store.backupStatus().last, null);
+
+  store.addNote({ body: '大事なメモ' });
+  assert.equal(store.backupStatus().stale, true, 'メモがあるのに未保存なら促す');
+
+  store.markBackedUp();
+  const fresh = store.backupStatus();
+  assert.equal(fresh.days, 0);
+  assert.equal(fresh.stale, false);
+  assert.equal(fresh.changedSince, false, '保存直後は変更なし');
+
+  // 8 日前に保存し、そのあと書き換えた場合
+  store.data.meta.lastBackupAt = new Date(`${addDays(todayKey(), -8)}T10:00:00`).toISOString();
+  store.addNote({ body: 'あとから書いたメモ' });
+  const old = store.backupStatus();
+  assert.equal(old.days, 8);
+  assert.equal(old.changedSince, true);
+  assert.equal(old.stale, true, '1週間以上たっていて変更もあれば促す');
+});
