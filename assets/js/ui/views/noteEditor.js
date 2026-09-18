@@ -94,6 +94,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   let saveTimer = null;
   let dirty = false;
+  /** この編集画面を離れたか（離れたあとに URL を書き換えないため） */
+  let disposed = false;
   let lastError = null;
   /** 入力のたびに進む番号。保存の前後で見比べて「保存中の入力」を取りこぼさない。 */
   let revision = 0;
@@ -384,7 +386,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       state.id = created.id;
       // 「新規」の履歴を、そのままこのメモの履歴として引き継ぐ
       histories.set(draftKey({ noteId: created.id }), editor.history);
-      replacePath(['note', created.id], { from: returnTo });
+      // すでに画面を離れていたら URL は触らない（戻った先から引き戻さない）
+      if (!disposed) replacePath(['note', created.id], { from: returnTo });
     }
 
     const result = await store.flush();
@@ -846,6 +849,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   active = {
     dispose() {
+      disposed = true;
       clearTimeout(saveTimer);
       clearTimeout(statsTimer);
       document.removeEventListener('keydown', onKeyDown);

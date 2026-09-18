@@ -174,13 +174,28 @@ export function mountApp(store, root) {
     setTimeout(() => celebrate(store, result), 260);
   }
 
+  /**
+   * 描画は 1 フレームに 1 回にまとめる。
+   * まとめて記録したときなど、短い間に何度も変更が起きても画面作りは 1 回で済む。
+   */
+  let renderQueued = false;
+  function scheduleRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => {
+      renderQueued = false;
+      if (document.documentElement.dataset.mode === 'editor') return;
+      render();
+    });
+  }
+
   store.subscribe((event) => {
     if (event?.type === 'error') toast(event.message);
     updateBackupBadge();
     syncMissions();
     // 編集画面は自分で描画を持っているので、保存のたびに作り直さない
     if (document.documentElement.dataset.mode === 'editor') return;
-    render();
+    scheduleRender();
   });
 
   startRouter(render);

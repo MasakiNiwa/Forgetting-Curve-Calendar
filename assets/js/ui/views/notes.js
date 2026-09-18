@@ -1,5 +1,5 @@
 /** メモ一覧画面 */
-import { h, button, iconButton } from '../dom.js';
+import { h, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { noteCard, emptyState } from '../components.js';
 import { openNoteEditor, openNoteDetail, openNoteMenu } from '../editor.js';
@@ -38,12 +38,18 @@ export function renderNotes(store) {
   const root = h('div', { class: 'page page--narrow' });
   const visible = selectNotes(store);
 
+  // 打つたびに全部を絞り込むと、メモが増えたとき重くなる。少し待ってからまとめて絞る
+  let queryTimer = null;
   const searchInput = h('input', {
     type: 'search',
     placeholder: 'メモ・手掛かり・タグを検索',
     value: state.query,
     'aria-label': 'メモを検索',
-    onInput: (e) => { state.query = e.target.value; renderList(); },
+    onInput: (e) => {
+      state.query = e.target.value;
+      clearTimeout(queryTimer);
+      queryTimer = setTimeout(() => renderList(), 140);
+    },
   });
 
   const sortSelect = h('select', {
@@ -68,7 +74,9 @@ export function renderNotes(store) {
         onClick: () => openExportDialog(store, visible, { title: 'メモを出力', baseName: 'forgetting-curve-notes' }),
       }))));
 
-  root.appendChild(h('div', { class: 'notes-toolbar' },
+  // 検索と絞り込みは、スクロールしても上に残す（長い一覧でも操作を見失わない）
+  const sticky = h('div', { class: 'notes-sticky' });
+  sticky.appendChild(h('div', { class: 'notes-toolbar' },
     h('div', { class: 'search' },
       h('span', { html: icon('search', { size: 20 }), style: { display: 'flex' } }),
       searchInput),
@@ -94,10 +102,10 @@ export function renderNotes(store) {
       },
     }, `#${tag} ${count}`));
   });
-  root.appendChild(filterRow);
+  sticky.appendChild(filterRow);
 
   if (state.tag || state.filter !== 'all' || state.query) {
-    root.appendChild(h('div', { class: 'notes-active-filter' },
+    sticky.appendChild(h('div', { class: 'notes-active-filter' },
       h('span', {}, `絞り込み中: ${[
         state.filter !== 'all' ? FILTERS.find((f) => f.id === state.filter).label : null,
         state.tag ? `#${state.tag}` : null,
@@ -114,12 +122,33 @@ export function renderNotes(store) {
       })));
   }
 
-  const list = h('div', { style: { marginTop: '16px' } });
+  // 上に貼り付いたときだけ、影と区切り線を出す
+  const sentinel = h('div', { class: 'notes-sticky__sentinel' });
+  root.appendChild(sentinel);
+  root.appendChild(sticky);
+  if (typeof IntersectionObserver === 'function') {
+    const io = new IntersectionObserver(([entry]) => {
+      sticky.dataset.stuck = entry.isIntersecting ? '' : 'true';
+    }, { threshold: 1 });
+    io.observe(sentinel);
+  }
+
+  const list = h('div', { class: 'notes-list' });
+  const more = h('div', { class: 'notes-more', hidden: true });
   root.appendChild(list);
+  root.appendChild(more);
+
+  /** 一度に描く枚数（メモが増えても、開いた瞬間が重くならないように） */
+  const PAGE = 40;
+  let moreObserver = null;
 
   function renderList() {
     const items = applyQuery(selectNotes(store));
     list.replaceChildren();
+    clear(more);
+    more.hidden = true;
+    moreObserver?.disconnect();
+    moreObserver = null;
     if (!items.length) {
       list.appendChild(emptyState({
         iconName: store.notes.length ? 'search' : 'sparkle',
@@ -135,9 +164,44 @@ export function renderNotes(store) {
       }));
       return;
     }
-    items.forEach((note) => {
+    let shown = 0;
+    const appendChunk = () => {
+      const slice = items.slice(shown, shown + PAGE);
+      const frag = document.createDocumentFragment();
+      slice.forEach((note) => frag.appendChild(makeCard(note)));
+      list.appendChild(frag);
+      shown += slice.length;
+      updateMore();
+    };
+
+    function updateMore() {
+      const rest = items.length - shown;
+      if (rest <= 0) {
+        more.hidden = true;
+        clear(more);
+        moreObserver?.disconnect();
+        moreObserver = null;
+        return;
+      }
+      more.hidden = false;
+      clear(more).append(
+        button(`さらに ${Math.min(PAGE, rest)} 件を表示（残り ${rest} 件）`, {
+          className: 'btn btn--tonal btn--block',
+          onClick: () => appendChunk(),
+        }),
+      );
+      // スクロールで下まで来たら、そのまま続きを足す
+      if (typeof IntersectionObserver === 'function' && !moreObserver) {
+        moreObserver = new IntersectionObserver((entries) => {
+          if (entries.some((e) => e.isIntersecting)) appendChunk();
+        }, { rootMargin: '400px' });
+        moreObserver.observe(more);
+      }
+    }
+
+    function makeCard(note) {
       const next = note.reviews.find((r) => r.status === 'pending');
-      const card = noteCard({
+      const el = noteCard({
         store,
         note,
         subtitle: subtitleFor(note, next),
@@ -166,13 +230,19 @@ export function renderNotes(store) {
         ].filter(Boolean),
       });
       if (note.id === focusId) {
-        card.classList.add('note-card--focus');
-        card.dataset.focus = 'true';
+        el.classList.add('note-card--focus');
+        el.dataset.focus = 'true';
       }
-      list.appendChild(card);
-    });
+      return el;
+    }
 
-    // 戻ってきた直後は、さっき編集していたメモの位置まで連れていく
+    // 戻ってきたメモが後ろの方にあるときは、そこまで描いてから連れていく
+    if (focusId) {
+      const at = items.findIndex((n) => n.id === focusId);
+      while (shown <= at) appendChunk();
+    }
+    if (!shown) appendChunk();
+
     const target = list.querySelector('[data-focus="true"]');
     if (target) {
       requestAnimationFrame(() => {

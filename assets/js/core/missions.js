@@ -11,8 +11,8 @@
  */
 import { addDays, diffDays } from './date.js';
 
-/** 1 日に出すミッションの数 */
-export const MISSION_COUNT = 3;
+/** 1 日に出すミッションの数（できるものが少ない日は、その数だけ出す） */
+export const MISSION_COUNT = 4;
 /** 全部そろえたときの追加ポイント */
 export const COMPLETE_BONUS = 20;
 /** おまもり（連続を 1 日ぶん守る）の上限 */
@@ -78,6 +78,30 @@ const DEFS = [
     desc: '今日のぶんを空にすると、明日が軽くなります。',
   },
   {
+    id: 'recall-many',
+    slot: 'recall',
+    icon: 'flame',
+    points: 30,
+    // 数をこなす手応えのあるお題。今日の予定が十分にある日だけ出す
+    available: (c) => c.plannedToday >= 10,
+    target: (c) => Math.min(20, Math.max(10, Math.floor(c.plannedToday * 0.8))),
+    progress: (c) => c.ratedToday,
+    title: (t) => `今日の復習を ${t} 件 まとめて片づける`,
+    desc: '調子のいい日に。まとめてやると、明日がぐっと軽くなります。',
+  },
+  {
+    id: 'recall-known',
+    slot: 'recall',
+    icon: 'check',
+    points: 25,
+    available: (c) => c.plannedToday >= 5,
+    target: () => 5,
+    progress: (c) => c.knownToday,
+    title: (t) => `「覚えていた」を ${t} 回 出す`,
+    desc: '思い出せた回数を数えます。あいまいでも、忘れていても減りません。',
+    unit: '回',
+  },
+  {
     id: 'reunion',
     slot: 'recall',
     icon: 'sparkle',
@@ -112,8 +136,31 @@ const DEFS = [
     unit: '文字',
   },
   {
-    id: 'revisit-edit',
+    id: 'write-many',
     slot: 'write',
+    icon: 'notes',
+    points: 30,
+    available: (c) => c.totalNotes >= 8,
+    target: () => 3,
+    progress: (c) => c.createdToday,
+    title: (t) => `メモを ${t} つ書く`,
+    desc: '思いついたことを、3 回に分けて置いていく日。',
+  },
+  {
+    id: 'write-long',
+    slot: 'write',
+    icon: 'text',
+    points: 30,
+    available: (c) => c.totalNotes >= 10,
+    target: () => 500,
+    progress: (c) => c.charsToday,
+    title: (t) => `今日 ${t} 文字 書く`,
+    desc: 'まとめて考えたい日に。分けて書いても合計されます。',
+    unit: '文字',
+  },
+  {
+    id: 'revisit-edit',
+    slot: 'grow',
     icon: 'note',
     points: 20,
     available: (c) => c.olderNotes >= 1,
@@ -123,8 +170,19 @@ const DEFS = [
     desc: '読み返して増えた一行が、いちばん濃い記憶になります。',
   },
   {
+    id: 'touch-notes',
+    slot: 'grow',
+    icon: 'layers',
+    points: 25,
+    available: (c) => c.totalNotes >= 6,
+    target: () => 3,
+    progress: (c) => c.touchedToday,
+    title: (t) => `${t} つのメモに触れる`,
+    desc: '書く・読み返す・思い出す。どれでも 1 件と数えます。',
+  },
+  {
     id: 'branch',
-    slot: 'extra',
+    slot: 'grow',
     icon: 'branch',
     points: 25,
     available: (c) => c.olderNotes >= 1,
@@ -134,8 +192,19 @@ const DEFS = [
     desc: '追加メモにも、そこから新しい忘却曲線がつきます。',
   },
   {
+    id: 'branch-two',
+    slot: 'grow',
+    icon: 'branch',
+    points: 30,
+    available: (c) => c.olderNotes >= 5,
+    target: () => 2,
+    progress: (c) => c.childCreatedToday,
+    title: (t) => `追加メモを ${t} つ生やす`,
+    desc: '読み返して出てきた気づきを、その場で足していく日。',
+  },
+  {
     id: 'inbox-start',
-    slot: 'extra',
+    slot: 'grow',
     icon: 'play',
     points: 20,
     available: (c) => c.inboxCount >= 1,
@@ -199,7 +268,7 @@ export function pickMissions(dayKey, ctx) {
   const taken = new Set();
   const picked = [];
 
-  ['recall', 'write', 'extra'].forEach((slot) => {
+  ['recall', 'write', 'grow', 'extra'].forEach((slot) => {
     const pool = candidates(slot, ctx, taken);
     if (!pool.length) return;
     const def = pool[Math.floor(rand() * pool.length) % pool.length];

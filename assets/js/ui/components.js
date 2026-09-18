@@ -168,7 +168,7 @@ function lastEventIdFor(note, review) {
 export function noteCard({ store, note, onOpen, subtitle, actions = [] }) {
   const next = note.reviews.find((r) => r.status === 'pending');
   const done = note.reviews.filter((r) => r.status !== 'pending').length;
-  const childCount = store.childrenOf(note.id).length;
+  const childCount = store.childCountOf(note.id);
   const preview = bodyPreview(note);
 
   return h('article', {

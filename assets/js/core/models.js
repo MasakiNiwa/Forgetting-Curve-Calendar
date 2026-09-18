@@ -79,6 +79,14 @@ function normalizeDayRecord(raw) {
     streakAt: typeof raw.streakAt === 'string' ? raw.streakAt : null,
     bonusAt: typeof raw.bonusAt === 'string' ? raw.bonusAt : null,
     celebrated: raw.celebrated === true,
+    // やる気くじ（全部そろえた日に 1 回だけ引ける）
+    omikuji: raw.omikuji && typeof raw.omikuji === 'object' && Number.isFinite(Number(raw.omikuji.fortune))
+      ? {
+        rank: String(raw.omikuji.rank || ''),
+        fortune: Math.max(0, Math.round(Number(raw.omikuji.fortune))),
+        at: typeof raw.omikuji.at === 'string' ? raw.omikuji.at : null,
+      }
+      : null,
   };
 }
 

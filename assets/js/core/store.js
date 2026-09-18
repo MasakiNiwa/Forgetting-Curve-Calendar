@@ -20,8 +20,12 @@ import {
   COMPLETE_BONUS, advanceStreak, evaluateMission, getMissionDef, levelInfo, pickMissions,
   pruneDays, streakAlive,
 } from './missions.js';
+import { drawOmikuji, readOmikuji } from './omikuji.js';
 import { migrate } from './migrations.js';
 import { createDefaultAdapter } from './storage.js';
+
+/** 保存をまとめる時間。入力のたびに全部を書き出すと重いので少し待つ。 */
+const SAVE_COALESCE_MS = 400;
 
 /**
  * 同じメモの 2 つの版を統合する。
@@ -91,6 +95,14 @@ export class Store {
     /** 直近の保存でエラーが出たか */
     this.lastSaveError = null;
     this._saving = null;
+    /** 保存の予約（まとめて 1 回で書くため） */
+    this._saveTimer = null;
+    this._pendingSave = false;
+    /** 親 id -> 子メモの数（一覧の描画で毎回数え直さない） */
+    this._children = null;
+    /** 変更のたびに進む番号。同じ内容の数え直しを避けるために使う。 */
+    this._revision = 0;
+    this._contextCache = null;
   }
 
   /* ---------------------------------------------------------- lifecycle */
@@ -189,11 +201,27 @@ export class Store {
    * 別タブが先に書いていた場合は、上書きせず先に取り込んでから保存する。
    */
   async persist() {
-    this._saving = (async () => {
+    // ここから先は「今の中身」を書きに行くので、予約は解除する
+    this._pendingSave = false;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = null;
+
+    const run = async () => {
       try {
-        const stored = await this.adapter.load();
-        const storedToken = stored?.meta?.saveToken ?? null;
-        if (stored && storedToken !== this.syncedToken) {
+        // 別タブの保存は、小さな印だけ見て気づく（毎回すべてを読み解かない）
+        let storedToken;
+        if (typeof this.adapter.token === 'function') {
+          storedToken = await this.adapter.token();
+          // 印がまだ無いデータは、いちど中身を見て確かめる
+          if (storedToken === undefined) {
+            const stored = await this.adapter.load();
+            storedToken = stored ? (stored.meta?.saveToken ?? null) : undefined;
+          }
+        } else {
+          const stored = await this.adapter.load();
+          storedToken = stored ? (stored.meta?.saveToken ?? null) : undefined;
+        }
+        if (storedToken !== undefined && storedToken !== this.syncedToken) {
           // 別のタブが先に保存している。上書きせず、取り込んでから書く
           await this.reconcile();
         }
@@ -217,14 +245,30 @@ export class Store {
         });
         return { ok: false, error: err };
       }
-    })();
+    };
+
+    // 保存は 1 本の列に並べる（同時に走らせない）
+    this._saving = (this._saving || Promise.resolve()).then(run, run);
     return this._saving;
   }
 
-  /** 進行中の保存を待ち、結果を返す */
+  /**
+   * 保存を予約する。
+   * 1 文字ごとに全部を書き出すと重いので、少しまとめてから 1 回で書く。
+   */
+  schedulePersist(delay = SAVE_COALESCE_MS) {
+    this._pendingSave = true;
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      if (this._pendingSave) this.persist();
+    }, delay);
+  }
+
+  /** 予約ぶんも含めて必ず書き出し、結果を待つ */
   async flush() {
-    const result = await (this._saving || this.persist());
-    return result;
+    if (this._pendingSave || this._saveTimer) return this.persist();
+    return this._saving || { ok: true };
   }
 
   /* ---------------------------------------------------------- pub / sub */
@@ -239,10 +283,18 @@ export class Store {
   }
 
   /** 変更を保存し、インデックスを捨てて通知する */
-  commit(event = { type: 'change' }) {
-    this._index = null;
+  /**
+   * 変更を確定して、購読者へ知らせ、保存を予約する。
+   * @param {object} event
+   * @param {{schedule?:boolean}} options schedule:false は「予定は変わっていない」
+   *   （本文だけの編集など）。日付ごとの索引を作り直さずに済む。
+   */
+  commit(event = { type: 'change' }, { schedule = true } = {}) {
+    if (schedule) this._index = null;
+    this._children = null;
+    this._revision += 1;
     this.emit(event);
-    this.persist();
+    this.schedulePersist();
   }
 
   /* ---------------------------------------------------------- accessors */
@@ -251,6 +303,18 @@ export class Store {
   get notes() { return this.data.notes; }
 
   getNote(id) { return this.data.notes.find((n) => n.id === id) || null; }
+
+  /** 親 id -> 子メモの数。一覧のカードで使うので、1 回だけ数えて使い回す。 */
+  childCountOf(noteId) {
+    if (!this._children) {
+      this._children = new Map();
+      this.data.notes.forEach((n) => {
+        if (!n.parentId) return;
+        this._children.set(n.parentId, (this._children.get(n.parentId) || 0) + 1);
+      });
+    }
+    return this._children.get(noteId) || 0;
+  }
 
   childrenOf(noteId) {
     return this.data.notes.filter((n) => n.parentId === noteId);
@@ -592,8 +656,10 @@ export class Store {
   updateNote(id, patch) {
     const note = this.getNote(id);
     if (!note) return null;
+    let anchorChanged = false;
     if (patch.anchorDate && patch.anchorDate !== note.anchorDate && this.canChangeAnchor(note)) {
       note.anchorDate = patch.anchorDate;
+      anchorChanged = true;
     }
     // 中身の変更だけ contentUpdatedAt を進める（復習の記録とは別に扱う）
     let contentChanged = false;
@@ -630,7 +696,8 @@ export class Store {
     const seed = patch.seed !== undefined ? sanitizeSeed(patch.seed) : note.schedule.seed;
     const spread = patch.spread !== undefined ? Number(patch.spread) || 0 : note.schedule.spread;
 
-    const changed = (patch.presetId && patch.presetId !== note.schedule.presetId)
+    const changed = anchorChanged
+      || (patch.presetId && patch.presetId !== note.schedule.presetId)
       || intervals.join(',') !== baseIntervals.join(',')
       || seed !== note.schedule.seed
       || spread !== note.schedule.spread;
@@ -645,8 +712,9 @@ export class Store {
       // 「この日に手を動かした」記録は日ごとに残す（後の編集で消えないように）
       this.recordTouch(note.id, charDelta);
     }
-    this.refresh(note);
-    this.commit({ type: 'note:update', noteId: id, contentChanged });
+    // 予定に関わる変更があったときだけ、組み直す（本文だけの編集では触らない）
+    if (changed) this.refresh(note);
+    this.commit({ type: 'note:update', noteId: id, contentChanged }, { schedule: changed });
     return note;
   }
 
@@ -810,7 +878,7 @@ export class Store {
     if (!progress.days[day]) {
       progress.days[day] = {
         ids: [], targets: {}, flags: {}, done: [], points: 0,
-        streakAt: null, bonusAt: null, celebrated: false,
+        streakAt: null, bonusAt: null, celebrated: false, omikuji: null,
       };
     }
     return progress.days[day];
@@ -840,9 +908,13 @@ export class Store {
    * すべて今のデータから数え直す（別の場所に二重に持たない）。
    */
   missionContext(day = todayKey()) {
+    // 同じ内容のまま何度も数え直さない（メモが増えても重くならないように）
+    const cacheKey = `${day}:${this._revision}`;
+    if (this._contextCache && this._contextCache.key === cacheKey) return this._contextCache.value;
     const queue = this.todayQueue(day);
     const oldLine = addDays(day, -30);
     let ratedToday = 0;
+    let knownToday = 0;
     let oldRecallToday = 0;
     let restartedToday = 0;
     let createdToday = 0;
@@ -850,6 +922,7 @@ export class Store {
     let editedToday = 0;
     let olderNotes = 0;
     let inboxCount = 0;
+    const touched = new Set(this.activityOf(day).notes);
 
     this.data.notes.forEach((note) => {
       const born = localDayOf(note.createdAt);
@@ -865,19 +938,24 @@ export class Store {
         if (ev.day !== day) return;
         if (ev.type === 'rate') {
           ratedToday += 1;
+          if (ev.rating === 'known') knownToday += 1;
           if (note.anchorDate <= oldLine) oldRecallToday += 1;
         }
+        if (ev.type === 'rate' || ev.type === 'skip') touched.add(note.id);
         if (ev.type === 'restart') restartedToday += 1;
       });
     });
 
     const backup = this.backupStatus(day);
     const record = this.progress.days[day];
-    return {
+    const value = {
       day,
       // その日に向き合う予定だった数（終わった分を含む＝進めても減らない）
       plannedToday: ratedToday + queue.items.length,
       ratedToday,
+      knownToday,
+      // 今日さわったメモの数（書く・読み返す・思い出す をまとめて数える）
+      touchedToday: touched.size,
       oldDueToday: queue.items.filter((it) => it.note.anchorDate <= oldLine).length + oldRecallToday,
       oldRecallToday,
       createdToday,
@@ -892,6 +970,8 @@ export class Store {
       backupStale: backup.stale,
       backupToday: Boolean(backup.last) && localDayOf(backup.last) === day,
     };
+    this._contextCache = { key: cacheKey, value };
+    return value;
   }
 
   /**
@@ -927,6 +1007,9 @@ export class Store {
       allDone: missions.length > 0 && doneCount === missions.length,
       earnedToday: record?.points || 0,
       celebrated: record?.celebrated === true,
+      // やる気くじ：全部そろえた日に 1 回だけ引ける
+      omikuji: readOmikuji(record?.omikuji),
+      canDrawOmikuji: missions.length > 0 && doneCount === missions.length && !record?.omikuji,
       level: levelInfo(this.progress.points),
       streak: { ...this.progress.streak, alive: streakAlive(this.progress.streak, day) },
       context: ctx,
@@ -1030,6 +1113,7 @@ export class Store {
       });
       if (record.bonusAt && !mineDay.bonusAt) { mineDay.bonusAt = record.bonusAt; changed = true; }
       if (record.streakAt && !mineDay.streakAt) { mineDay.streakAt = record.streakAt; changed = true; }
+      if (record.omikuji && !mineDay.omikuji) { mineDay.omikuji = record.omikuji; changed = true; }
     });
     return changed;
   }
@@ -1059,6 +1143,29 @@ export class Store {
     record.flags[name] = true;
     this.commit({ type: 'missions:flag', day, name });
     return true;
+  }
+
+  /**
+   * やる気くじを引く。
+   * 全部そろえた日に 1 回だけ。引いた結果はその日ぶん残る。
+   */
+  drawOmikuji(day = todayKey(), rand = Math.random) {
+    const state = this.missionState(day);
+    if (!state.allDone) return null;
+    const record = this._dayRecord(day);
+    if (record.omikuji) return readOmikuji(record.omikuji);
+
+    // 直近に出た言葉は避ける（毎日ちがう言葉に出会えるように）
+    const recent = Object.entries(this.progress.days)
+      .filter(([key]) => key !== day)
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .slice(0, 10)
+      .map(([, rec]) => rec.omikuji?.fortune)
+      .filter((n) => Number.isInteger(n));
+
+    record.omikuji = drawOmikuji(rand, recent);
+    this.commit({ type: 'missions:omikuji', day });
+    return readOmikuji(record.omikuji);
   }
 
   /** 祝いを出したことを覚えておく（1 日に 1 回だけ） */

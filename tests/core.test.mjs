@@ -19,7 +19,11 @@ import {
 import { migrate } from '../assets/js/core/migrations.js';
 import { SCHEMA_VERSION } from '../assets/js/core/config.js';
 import {
-  advanceStreak, createStreak, levelInfo, pickMissions, pointsForLevel,
+  FORTUNES, RANKS as OMIKUJI_RANKS, drawOmikuji, pickRank, readOmikuji,
+} from '../assets/js/core/omikuji.js';
+import {
+  MISSION_COUNT, advanceStreak, createStreak, getMissionDef, levelInfo, pickMissions,
+  pointsForLevel,
 } from '../assets/js/core/missions.js';
 import { serializeNotes, toCsv } from '../assets/js/core/exporter.js';
 import { MemoryAdapter } from '../assets/js/core/storage.js';
@@ -867,24 +871,44 @@ test('missions: 連続はおまもりで守られ、7日ごとに増える', () 
 
 test('missions: 同じ日なら同じお題が選ばれる', () => {
   const ctx = {
-    plannedToday: 4, ratedToday: 0, oldDueToday: 0, oldRecallToday: 0, createdToday: 0,
-    childCreatedToday: 0, editedToday: 0, restartedToday: 0, inboxCount: 0, olderNotes: 5,
-    totalNotes: 5, charsToday: 0, flags: {}, backupStale: false, backupToday: false,
+    plannedToday: 4, ratedToday: 0, knownToday: 0, oldDueToday: 0, oldRecallToday: 0,
+    createdToday: 0, childCreatedToday: 0, editedToday: 0, restartedToday: 0, inboxCount: 0,
+    olderNotes: 5, totalNotes: 5, charsToday: 0, touchedToday: 0, flags: {},
+    backupStale: false, backupToday: false,
   };
   const a = pickMissions('2026-09-18', ctx).map((m) => m.id);
   const b = pickMissions('2026-09-18', ctx).map((m) => m.id);
-  const c = pickMissions('2026-09-19', ctx).map((m) => m.id);
   assert.deepEqual(a, b, '同じ日は同じ組み合わせ');
-  assert.equal(a.length, 3);
-  assert.equal(new Set(a).size, 3, '重複しない');
-  assert.ok(a.join() !== c.join() || true, '日が変われば選び直す');
+  assert.equal(a.length, MISSION_COUNT);
+  assert.equal(new Set(a).size, MISSION_COUNT, '重複しない');
+  // 枠は「思い出す・書く・育てる・おまけ」から 1 つずつ
+  assert.equal(new Set(a.map((id) => getMissionDef(id).slot)).size, MISSION_COUNT);
+});
+
+test('missions: 数をこなすお題は、今日の予定が足りる日だけ出る', () => {
+  const base = {
+    plannedToday: 0, ratedToday: 0, knownToday: 0, oldDueToday: 0, oldRecallToday: 0,
+    createdToday: 0, childCreatedToday: 0, editedToday: 0, restartedToday: 0, inboxCount: 0,
+    olderNotes: 0, totalNotes: 0, charsToday: 0, touchedToday: 0, flags: {},
+    backupStale: false, backupToday: false,
+  };
+  const many = getMissionDef('recall-many');
+  assert.equal(many.available({ ...base, plannedToday: 6 }), false, '予定が少ない日は出さない');
+  assert.equal(many.available({ ...base, plannedToday: 12 }), true);
+  assert.equal(many.target({ ...base, plannedToday: 12 }), 10, '予定の範囲に収める');
+  assert.equal(many.target({ ...base, plannedToday: 40 }), 20, '多すぎる日も上限で止める');
+
+  const three = getMissionDef('write-many');
+  assert.equal(three.available({ ...base, totalNotes: 3 }), false, '始めたばかりの人には出さない');
+  assert.equal(three.available({ ...base, totalNotes: 20 }), true);
 });
 
 test('missions: 予定が無い日でも 3 つ出せる（最初の日）', () => {
   const ctx = {
-    plannedToday: 0, ratedToday: 0, oldDueToday: 0, oldRecallToday: 0, createdToday: 0,
-    childCreatedToday: 0, editedToday: 0, restartedToday: 0, inboxCount: 0, olderNotes: 0,
-    totalNotes: 0, charsToday: 0, flags: {}, backupStale: false, backupToday: false,
+    plannedToday: 0, ratedToday: 0, knownToday: 0, oldDueToday: 0, oldRecallToday: 0,
+    createdToday: 0, childCreatedToday: 0, editedToday: 0, restartedToday: 0, inboxCount: 0,
+    olderNotes: 0, totalNotes: 0, charsToday: 0, touchedToday: 0, flags: {},
+    backupStale: false, backupToday: false,
   };
   const picked = pickMissions('2026-09-18', ctx);
   assert.ok(picked.length >= 1, '出せるものだけが出る');
@@ -1112,4 +1136,120 @@ test('store: 1 つ達成した時点で、その日は「続いた日」にな�
   assert.equal(all.justCompletedAll, true);
   assert.equal(store.data.progress.streak.current, 1, '同じ日に二度数えない');
   assert.equal(store.data.progress.points, 15 + 10 + 20);
+});
+
+/* ----------------------------------------------------- v0.7.1: やる気くじ */
+
+test('omikuji: 悪い運勢は作らない／占いは重複しない', () => {
+  assert.equal(FORTUNES.length >= 100, true, '100 種類以上');
+  assert.equal(new Set(FORTUNES.map((f) => f.text)).size, FORTUNES.length, '同じ文言はない');
+  const labels = OMIKUJI_RANKS.map((r) => r.label);
+  ['凶', '大凶', '小凶', '末凶'].forEach((bad) => {
+    assert.equal(labels.includes(bad), false, `${bad} は用意しない`);
+  });
+  FORTUNES.forEach((f) => {
+    assert.equal(typeof f.text, 'string');
+    assert.ok(f.text.length > 5 && f.text.length <= 60, '短くて読みやすい');
+    assert.ok(f.focus, '見出しが付いている');
+  });
+});
+
+test('omikuji: 重みの通りに運勢が出る', () => {
+  // 0 に近い乱数ならいちばん上の運勢、1 に近ければいちばん下
+  assert.equal(pickRank(() => 0).id, OMIKUJI_RANKS[0].id);
+  assert.equal(pickRank(() => 0.999).id, OMIKUJI_RANKS[OMIKUJI_RANKS.length - 1].id);
+  const drawn = drawOmikuji(() => 0.5);
+  assert.ok(readOmikuji(drawn), '引いた結果は読み戻せる');
+});
+
+test('store: やる気くじは全部そろえた日に 1 回だけ', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+  store.syncMissions(today);
+
+  // まだそろっていないので引けない
+  assert.equal(store.missionState(today).canDrawOmikuji, false);
+  assert.equal(store.drawOmikuji(today), null);
+
+  // お題を 1 つにして満たす
+  const record = store.data.progress.days[today];
+  record.ids = ['write-one'];
+  record.targets = { 'write-one': 1 };
+  record.done = [];
+  store.addNote({ body: 'くじのテスト' });
+  store.syncMissions(today);
+  assert.equal(store.missionState(today).canDrawOmikuji, true);
+
+  const first = store.drawOmikuji(today, () => 0.42);
+  assert.ok(first.rank.label, '運勢が出る');
+  assert.ok(first.fortune.text, '占いが出る');
+  assert.equal(store.missionState(today).canDrawOmikuji, false, '同じ日に二度は引けない');
+
+  // 引き直しても同じ結果が返る
+  const again = store.drawOmikuji(today, () => 0.99);
+  assert.equal(again.fortune.text, first.fortune.text);
+
+  // バックアップにも残る
+  const raw = JSON.parse(JSON.stringify(store.exportData()));
+  const restored = new Store(new MemoryAdapter());
+  await restored.load();
+  restored.importData(raw, 'replace');
+  assert.equal(restored.missionState(today).omikuji.fortune.text, first.fortune.text);
+});
+
+test('store: 直近に出た占いは続けて出さない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+  // 昨日・一昨日に出た番号を記録しておく
+  store._dayRecord(addDays(today, -1)).omikuji = { rank: 'kichi', fortune: 5, at: null };
+  store._dayRecord(addDays(today, -2)).omikuji = { rank: 'kichi', fortune: 6, at: null };
+
+  const record = store._dayRecord(today);
+  record.ids = ['write-one'];
+  record.targets = { 'write-one': 1 };
+  store.addNote({ body: 'くじのテスト' });
+  store.syncMissions(today);
+
+  // 5 番が出る乱数を渡しても、直近と重なるのでずれる
+  const pick = 5 / FORTUNES.length + 0.0001;
+  const result = store.drawOmikuji(today, () => pick);
+  assert.notEqual(result.index, 5);
+  assert.notEqual(result.index, 6);
+});
+
+/* ------------------------------------------------- v0.7.1: 大量のメモへの備え */
+
+test('store: 保存はまとめて 1 回にする', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  let writes = 0;
+  const save = store.adapter.save.bind(store.adapter);
+  store.adapter.save = async (data) => { writes += 1; return save(data); };
+
+  for (let i = 0; i < 20; i += 1) store.addNote({ body: `まとめ保存 ${i}` });
+  assert.equal(writes, 0, '予約しただけでは書かない');
+
+  const result = await store.flush();
+  assert.equal(result.ok, true);
+  assert.equal(writes, 1, '20 回の変更が 1 回の書き込みになる');
+  assert.equal(store.adapter.data.notes.length, 20, '最新が保存されている');
+
+  // 変更が無ければ、もう書かない
+  await store.flush();
+  assert.equal(writes, 1);
+});
+
+test('store: 子メモの数は数え直さずに使い回す', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const parent = store.addNote({ body: '親' });
+  store.addNote({ body: '子1', parentId: parent.id });
+  store.addNote({ body: '子2', parentId: parent.id });
+  assert.equal(store.childCountOf(parent.id), 2);
+  assert.equal(store.childCountOf('n_none'), 0);
+
+  store.addNote({ body: '子3', parentId: parent.id });
+  assert.equal(store.childCountOf(parent.id), 3, '変更のあとは数え直す');
 });
