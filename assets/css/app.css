@@ -1533,3 +1533,32 @@ button, input, textarea, select { font: inherit; color: inherit; }
 /* 数字の差し替えでブラウザが勝手にスクロール位置を補正しないようにする */
 .schedule-preview, .spread-sample, .spread-summary { overflow-anchor: none; }
 .spread-sample__row[hidden] { display: none; }
+
+/* 編集から戻ったとき、さっき見ていたメモがどれか分かるようにする */
+.note-card--focus {
+  outline: 2px solid var(--fcc-primary);
+  outline-offset: 2px;
+  animation: fcc-focus-fade 1.6s var(--fcc-ease-standard);
+}
+@keyframes fcc-focus-fade {
+  0% { background: var(--fcc-primary-container); }
+  100% { background: var(--fcc-surface-container-low); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .note-card--focus { animation: none; }
+}
+
+/* 今日の積み重ね（達成とは別に、書いた・思い出した事実を返す） */
+.mission-recap {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-tertiary-container);
+  color: var(--fcc-on-tertiary-container);
+}
+.mission-recap__icon { display: flex; flex: none; }
+.mission-recap__title { font-size: .84rem; font-weight: 650; }
+.mission-recap .field__hint { color: inherit; opacity: .85; }

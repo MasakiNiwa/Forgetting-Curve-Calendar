@@ -75,7 +75,8 @@ function normalizeDayRecord(raw) {
     flags,
     done: Array.isArray(raw.done) ? raw.done.filter((v) => typeof v === 'string').slice(0, 8) : [],
     points: Math.max(0, Math.round(Number(raw.points) || 0)),
-    chars: Math.max(0, Math.round(Number(raw.chars) || 0)),
+    // その日の連続をすでに数えたか／ボーナスを渡したか
+    streakAt: typeof raw.streakAt === 'string' ? raw.streakAt : null,
     bonusAt: typeof raw.bonusAt === 'string' ? raw.bonusAt : null,
     celebrated: raw.celebrated === true,
   };
@@ -103,6 +104,27 @@ export function normalizeProgress(raw, today = todayKey()) {
   };
 }
 
+/**
+ * 日ごとの活動の記録。
+ *
+ * 「最後に更新した日」だけでは、書き足すたびに過去の活動日が消えてしまう。
+ * その日に触ったメモの id と、増えた文字数を日ごとに残しておく。
+ */
+export function normalizeActivity(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  Object.entries(raw).forEach(([day, value]) => {
+    if (!isValidKey(day) || !value || typeof value !== 'object') return;
+    const notes = Array.isArray(value.notes)
+      ? [...new Set(value.notes.filter((v) => typeof v === 'string'))].slice(0, 500)
+      : [];
+    const chars = Math.max(0, Math.round(Number(value.chars) || 0));
+    if (!notes.length && !chars) return;
+    out[day] = { notes, chars };
+  });
+  return out;
+}
+
 export function createEmptyData() {
   const now = new Date().toISOString();
   return {
@@ -110,6 +132,7 @@ export function createEmptyData() {
     notes: [],
     deleted: {},
     settings: { ...DEFAULT_SETTINGS },
+    activity: {},
     progress: createProgress(),
     meta: { createdAt: now, updatedAt: now, appVersion: APP_VERSION, lastBackupAt: null },
   };
@@ -328,6 +351,8 @@ export function normalizeData(raw) {
     // 削除したメモの墓標。別タブの古い保存で復活しないようにする
     deleted: normalizeTombstones(raw.deleted),
     settings,
+    // 日ごとの活動（書いた日が後の編集で消えないように残す）
+    activity: normalizeActivity(raw.activity),
     // デイリーミッションの進み具合（バックアップにも含める）
     progress: normalizeProgress(raw.progress),
     meta: {

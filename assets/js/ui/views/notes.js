@@ -26,6 +26,14 @@ const SORTS = [
 
 const state = { query: '', filter: 'all', tag: null, sort: 'updated' };
 
+/** 直前に編集していたメモ。一覧へ戻ったとき、どれを見ていたか分かるようにする。 */
+let focusId = null;
+
+/** 編集画面から一覧へ戻るときに呼ぶ */
+export function focusNote(id) {
+  focusId = id || null;
+}
+
 export function renderNotes(store) {
   const root = h('div', { class: 'page page--narrow' });
   const visible = selectNotes(store);
@@ -157,8 +165,22 @@ export function renderNotes(store) {
           }) : null,
         ].filter(Boolean),
       });
+      if (note.id === focusId) {
+        card.classList.add('note-card--focus');
+        card.dataset.focus = 'true';
+      }
       list.appendChild(card);
     });
+
+    // 戻ってきた直後は、さっき編集していたメモの位置まで連れていく
+    const target = list.querySelector('[data-focus="true"]');
+    if (target) {
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ block: 'nearest' });
+        setTimeout(() => target.classList.remove('note-card--focus'), 1600);
+      });
+      focusId = null;
+    }
   }
 
   renderList();

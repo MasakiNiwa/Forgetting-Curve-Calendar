@@ -151,13 +151,16 @@ export function openMissionSheet(store) {
               h('span', { class: 'mission-card__points' }, `+${m.points} pt`))))),
       ),
 
+      recapRow(store),
+
       state.allDone
         ? h('div', { class: 'banner banner--success', style: { marginTop: '12px' } },
           h('span', { html: icon('sparkle', { size: 18 }), style: { display: 'flex' } }),
           h('span', { style: { flex: '1' } },
             `今日のぶんは達成しました（+${COMPLETE_BONUS} pt のボーナス込みで ${state.earnedToday} pt）。`))
         : h('div', { class: 'field__hint', style: { marginTop: '12px' } },
-          '全部そろえると、ボーナスと連続日数がつきます。できない日は、おまもりが守ります。'),
+          '1 つでも達成すれば、その日は「続いた日」として数えます。'
+          + '全部そろえると、さらにボーナスが付きます。'),
 
       h('div', { class: 'field__hint', style: { marginTop: '10px' } },
         'ミッションは「今日の予定の範囲」でしか出ません。増やすためではなく、続けるための目安です。'),
@@ -168,6 +171,32 @@ export function openMissionSheet(store) {
   // 開いている間に達成したら、その場で表示を更新する
   const unsubscribe = store.subscribe(() => render());
   return openSheet({ title: 'デイリーミッション', content, onClose: unsubscribe });
+}
+
+/**
+ * 今日の積み重ね。
+ * ミッションの達成とは別に、「書いた・思い出した」そのものを返す。
+ */
+function recapRow(store) {
+  const recap = store.recap();
+  const parts = [
+    recap.written ? `メモ ${recap.written} 件` : null,
+    recap.chars ? `${recap.chars} 文字` : null,
+    recap.reviewed ? `思い出し ${recap.reviewed} 回` : null,
+  ].filter(Boolean);
+  if (!parts.length && !recap.touched) return null;
+
+  const notes = [
+    recap.reunions ? `1ヶ月より前のメモに ${recap.reunions} 件 再会しました。` : null,
+    recap.insights ? `読み返して ${recap.insights} 件の気づきが生まれました。` : null,
+  ].filter(Boolean);
+
+  return h('div', { class: 'mission-recap' },
+    h('span', { class: 'mission-recap__icon', html: icon('sparkle', { size: 18 }) }),
+    h('div', {},
+      h('div', { class: 'mission-recap__title' },
+        `今日の積み重ね：${parts.join('・') || `${recap.touched} 件のメモに触れました`}`),
+      notes.length ? h('div', { class: 'field__hint' }, notes.join(' ')) : null));
 }
 
 /* ------------------------------------------------------------------ */

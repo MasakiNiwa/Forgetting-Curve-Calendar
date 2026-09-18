@@ -13,8 +13,8 @@ import {
   resolveIntervals, sanitizeIntervals, sanitizeSeed,
 } from './curve.js';
 import {
-  createEmptyData, createNote, createProgress, makeEventId, normalizeData, normalizeNote,
-  normalizeSettings, normalizeTags, normalizeTombstones,
+  createEmptyData, createNote, createProgress, makeEventId, normalizeActivity, normalizeData,
+  normalizeNote, normalizeSettings, normalizeTags, normalizeTombstones,
 } from './models.js';
 import {
   COMPLETE_BONUS, advanceStreak, evaluateMission, getMissionDef, levelInfo, pickMissions,
@@ -153,11 +153,12 @@ export class Store {
       }
     });
 
-    // ミッションの進み具合も、失わないように統合する
+    // ミッションの進み具合と活動記録も、失わないように統合する
     const progressChanged = this.mergeProgress(incoming.progress);
+    const activityChanged = this.mergeActivity(incoming.activity);
 
     const nextNotes = [...mine.values()];
-    const changed = added > 0 || updated > 0 || progressChanged
+    const changed = added > 0 || updated > 0 || progressChanged || activityChanged
       || nextNotes.length !== this.data.notes.length;
     this.data.deleted = tombstones;
     if (changed) {
@@ -451,6 +452,8 @@ export class Store {
    */
   touchedDays() {
     const days = new Set();
+    // 日ごとの記録（v0.6.1 以降はこれが本命。過去の日が後の編集で消えない）
+    Object.keys(this.data.activity || {}).forEach((day) => days.add(day));
     this.data.notes.forEach((note) => {
       days.add(localDayOf(note.createdAt));
       if (note.contentUpdatedAt) days.add(localDayOf(note.contentUpdatedAt));
@@ -576,7 +579,7 @@ export class Store {
   addNote(input) {
     const note = createNote(input, this.settings);
     this.data.notes.push(note);
-    this.recordChars(note.body.length);
+    this.recordTouch(note.id, note.body.length);
     this.commit({ type: 'note:add', noteId: note.id });
     return note;
   }
@@ -602,11 +605,12 @@ export class Store {
     if (patch.title !== undefined) setField('title', String(patch.title).trim());
     if (patch.cue !== undefined) setField('cue', String(patch.cue).trim());
     // 本文は前後の空白・改行を勝手に削らない（書いたとおりに残す）
+    let charDelta = 0;
     if (patch.body !== undefined) {
       const before = note.body.length;
       setField('body', String(patch.body));
       // 「今日書いた量」は増えた分だけ数える（消した分で目減りさせない）
-      this.recordChars(note.body.length - before);
+      charDelta = note.body.length - before;
     }
     if (patch.tags !== undefined) {
       const tags = normalizeTags(patch.tags);
@@ -636,7 +640,11 @@ export class Store {
     }
     const now = new Date().toISOString();
     note.updatedAt = now;
-    if (contentChanged) note.contentUpdatedAt = now;
+    if (contentChanged) {
+      note.contentUpdatedAt = now;
+      // 「この日に手を動かした」記録は日ごとに残す（後の編集で消えないように）
+      this.recordTouch(note.id, charDelta);
+    }
     this.refresh(note);
     this.commit({ type: 'note:update', noteId: id, contentChanged });
     return note;
@@ -801,17 +809,30 @@ export class Store {
     const progress = this.progress;
     if (!progress.days[day]) {
       progress.days[day] = {
-        ids: [], targets: {}, flags: {}, done: [], points: 0, chars: 0, bonusAt: null, celebrated: false,
+        ids: [], targets: {}, flags: {}, done: [], points: 0,
+        streakAt: null, bonusAt: null, celebrated: false,
       };
     }
     return progress.days[day];
   }
 
-  /** 今日書いた文字数を足す（増えた分だけ） */
-  recordChars(delta, day = todayKey()) {
-    const n = Math.round(Number(delta) || 0);
-    if (n <= 0) return;
-    this._dayRecord(day).chars += n;
+  /**
+   * その日に手を動かした記録を残す。
+   * メモの「最終更新日時」は上書きされてしまうので、日ごとの記録を別に持つ。
+   */
+  recordTouch(noteId, charDelta = 0, day = todayKey()) {
+    if (!this.data.activity) this.data.activity = {};
+    const entry = this.data.activity[day] || { notes: [], chars: 0 };
+    if (noteId && !entry.notes.includes(noteId)) entry.notes.push(noteId);
+    const n = Math.round(Number(charDelta) || 0);
+    if (n > 0) entry.chars += n;
+    this.data.activity[day] = entry;
+    return entry;
+  }
+
+  /** その日の活動（触れたメモと、増えた文字数） */
+  activityOf(day = todayKey()) {
+    return this.data.activity?.[day] || { notes: [], chars: 0 };
   }
 
   /**
@@ -866,10 +887,27 @@ export class Store {
       inboxCount,
       olderNotes,
       totalNotes: this.data.notes.length,
-      charsToday: record?.chars || 0,
+      charsToday: this.activityOf(day).chars,
       flags: record?.flags || {},
       backupStale: backup.stale,
       backupToday: Boolean(backup.last) && localDayOf(backup.last) === day,
+    };
+  }
+
+  /**
+   * その日の積み重ね。
+   * 数字を追わせるためではなく「今日はこれだけ記憶に触れた」を返すために使う。
+   */
+  recap(day = todayKey()) {
+    const ctx = this.missionContext(day);
+    const activity = this.activityOf(day);
+    return {
+      chars: activity.chars,
+      touched: activity.notes.length,
+      reviewed: ctx.ratedToday,
+      reunions: ctx.oldRecallToday,
+      insights: ctx.childCreatedToday,
+      written: ctx.createdToday,
     };
   }
 
@@ -918,14 +956,21 @@ export class Store {
       changed = true;
     });
 
-    let justCompletedAll = false;
+    // 意味のある行動が 1 つでもあれば、その日は「続いた日」として数える。
+    // 全部そろえるのは、そこに乗るボーナス。
     let streakResult = null;
+    if (record.done.length && !record.streakAt) {
+      record.streakAt = new Date().toISOString();
+      streakResult = advanceStreak(this.progress.streak, day);
+      this.progress.streak = streakResult.streak;
+      changed = true;
+    }
+
+    let justCompletedAll = false;
     if (state.allDone && !record.bonusAt) {
       record.bonusAt = new Date().toISOString();
       record.points += COMPLETE_BONUS;
       this.progress.points += COMPLETE_BONUS;
-      streakResult = advanceStreak(this.progress.streak, day);
-      this.progress.streak = streakResult.streak;
       justCompletedAll = true;
       changed = true;
     }
@@ -974,7 +1019,6 @@ export class Store {
       if (!mineDay) { ours.days[day] = record; changed = true; return; }
       const done = [...new Set([...mineDay.done, ...record.done])];
       if (done.length !== mineDay.done.length) { mineDay.done = done; changed = true; }
-      if (record.chars > mineDay.chars) { mineDay.chars = record.chars; changed = true; }
       if (record.points > mineDay.points) { mineDay.points = record.points; changed = true; }
       if (!mineDay.ids.length && record.ids.length) {
         mineDay.ids = record.ids;
@@ -985,6 +1029,24 @@ export class Store {
         if (!mineDay.flags[f]) { mineDay.flags[f] = true; changed = true; }
       });
       if (record.bonusAt && !mineDay.bonusAt) { mineDay.bonusAt = record.bonusAt; changed = true; }
+      if (record.streakAt && !mineDay.streakAt) { mineDay.streakAt = record.streakAt; changed = true; }
+    });
+    return changed;
+  }
+
+  /**
+   * 別のタブの活動記録を取り込む。触れたメモは和集合、文字数は多い方を採る。
+   */
+  mergeActivity(theirs) {
+    const incoming = normalizeActivity(theirs);
+    if (!this.data.activity) this.data.activity = {};
+    let changed = false;
+    Object.entries(incoming).forEach(([day, entry]) => {
+      const mine = this.data.activity[day];
+      if (!mine) { this.data.activity[day] = entry; changed = true; return; }
+      const notes = [...new Set([...mine.notes, ...entry.notes])];
+      if (notes.length !== mine.notes.length) { mine.notes = notes; changed = true; }
+      if (entry.chars > mine.chars) { mine.chars = entry.chars; changed = true; }
     });
     return changed;
   }

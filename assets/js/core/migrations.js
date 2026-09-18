@@ -90,10 +90,30 @@ function v3ToV4(data) {
   };
 }
 
+/**
+ * v4 → v5
+ * 「その日に手を動かした記録」を日ごとに持つようにした（activity）。
+ * ミッションの日次記録に入れていた文字数は、こちらへ移す。
+ */
+function v4ToV5(data) {
+  const activity = { ...(data.activity && typeof data.activity === 'object' ? data.activity : {}) };
+  const days = data.progress?.days;
+  if (days && typeof days === 'object') {
+    Object.entries(days).forEach(([day, record]) => {
+      const chars = Number(record?.chars) || 0;
+      if (!chars) return;
+      const entry = activity[day] || { notes: [], chars: 0 };
+      activity[day] = { notes: entry.notes || [], chars: Math.max(entry.chars || 0, chars) };
+    });
+  }
+  return { ...data, schemaVersion: 5, activity };
+}
+
 const MIGRATIONS = {
   1: v1ToV2,
   2: v2ToV3,
   3: v3ToV4,
+  4: v4ToV5,
 };
 
 export function migrate(raw) {

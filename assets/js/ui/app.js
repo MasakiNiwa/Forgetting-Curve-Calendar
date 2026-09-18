@@ -97,8 +97,14 @@ export function mountApp(store, root) {
     appbar.insertAdjacentElement('afterend', banner);
   }
 
+  /** 画面ごとのスクロール位置（往復しても、見ていた場所に戻れるように） */
+  const scrollPositions = new Map();
+  let shownRoute = null;
+
   function render() {
     const { segments, params } = parseHash();
+    // いま見えている画面の位置を控えてから切り替える
+    if (shownRoute) scrollPositions.set(shownRoute, main.scrollTop);
 
     // メモ編集は全画面（アプリ内の表示領域すべて）を使う
     if (segments[0] === 'note') {
@@ -110,6 +116,7 @@ export function mountApp(store, root) {
         returnTo: params.get('from') || 'notes',
       }));
       main.scrollTop = 0;
+      shownRoute = null;
       document.title = `メモ｜${APP_NAME}`;
       return;
     }
@@ -123,14 +130,23 @@ export function mountApp(store, root) {
       if (id === route) el.setAttribute('aria-current', 'page');
       else el.removeAttribute('aria-current');
     });
-    const scroll = main.scrollTop;
     clear(main).appendChild(def.render(store));
-    main.scrollTop = route === 'calendar' ? scroll : 0;
+    // 一覧やカレンダーは、戻ってきたときに同じ場所から続けられるようにする
+    main.scrollTop = scrollPositions.get(route) || 0;
+    shownRoute = route;
     document.title = `${def.label}｜${APP_NAME}`;
+    flushCelebration();
   }
 
   // ミッションの判定は保存のたびに走るので、自分の commit で再入しないようにする
   let syncing = false;
+  /** 書いている最中の祝いは邪魔なので、編集画面を出るまで預かる */
+  let pendingCelebration = null;
+
+  function inEditor() {
+    return document.documentElement.dataset.mode === 'editor';
+  }
+
   function syncMissions() {
     if (syncing || !store.settings.missionsEnabled) { mission.update(); return; }
     syncing = true;
@@ -138,10 +154,24 @@ export function mountApp(store, root) {
       const result = store.syncMissions();
       mission.update();
       announceMissions(result);
-      celebrate(store, result);
+      if (result?.justCompletedAll && inEditor()) {
+        // 本文の入力を止めない。小さな知らせだけ出して、あとで祝う
+        pendingCelebration = result;
+        toast('今日のミッションがそろいました');
+      } else {
+        celebrate(store, result);
+      }
     } finally {
       syncing = false;
     }
+  }
+
+  /** 編集画面から戻ったら、預かっていた祝いを出す */
+  function flushCelebration() {
+    if (!pendingCelebration || inEditor()) return;
+    const result = pendingCelebration;
+    pendingCelebration = null;
+    setTimeout(() => celebrate(store, result), 260);
   }
 
   store.subscribe((event) => {
