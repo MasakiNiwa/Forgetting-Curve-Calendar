@@ -124,6 +124,21 @@ export class TextEditor {
     return { line: lines.length, column: lines[lines.length - 1].length + 1 };
   }
 
+  /**
+   * ステータスバー用の軽い集計。
+   * 長いメモでも入力のたびに重くならないよう、文字列を作り直さずに数える。
+   */
+  quickStats() {
+    const text = this.el.value;
+    let lines = text ? 1 : 0;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text.charCodeAt(i) === 10) lines += 1;
+    }
+    const { start, end } = this.selection;
+    return { chars: text.length, lines, selected: end - start };
+  }
+
+  /** 詳しい集計（文字数の内訳を出すときだけ使う） */
   stats() {
     const text = this.el.value;
     return {
@@ -228,6 +243,7 @@ export class TextEditor {
 /* 既定のコマンド                                                      */
 /* ------------------------------------------------------------------ */
 
+const HEADING = '# ';
 const BULLET = '- ';
 const CHECKBOX = '- [ ] ';
 const CHECKED = '- [x] ';
@@ -320,6 +336,33 @@ export function registerDefaultCommands(editor) {
           return line;
         }).join('\n');
         if (mapped === block) return;
+        ed.replaceRange(from, to, mapped, { select: [from, from + mapped.length] });
+      },
+    })
+    .registerCommand('heading', {
+      label: '見出し',
+      icon: 'heading',
+      // 行頭の「# 」を付け外しする。長いメモの中で目印になる。
+      run: (ed) => {
+        const { from, to } = ed.lineRange();
+        const block = ed.el.value.slice(from, to);
+        const lines = block.split('\n');
+        const targets = lines.filter((l) => l.trim());
+        const allHeading = targets.length > 0 && targets.every((l) => /^#{1,6}\s/.test(l.trimStart()));
+        const mapped = lines.map((line) => {
+          if (!line.trim()) return line;
+          const indent = line.match(/^[ \t]*/)[0];
+          const rest = line.slice(indent.length);
+          if (allHeading) return indent + rest.replace(/^#{1,6}\s+/, '');
+          if (/^#{1,6}\s/.test(rest)) return line;
+          return indent + HEADING + rest;
+        }).join('\n');
+        if (mapped === block) {
+          // 空行なら「# 」を置いて、そのまま書き始められるようにする
+          const caret = from + HEADING.length;
+          ed.replaceRange(from, to, HEADING, { select: [caret, caret] });
+          return;
+        }
         ed.replaceRange(from, to, mapped, { select: [from, from + mapped.length] });
       },
     })

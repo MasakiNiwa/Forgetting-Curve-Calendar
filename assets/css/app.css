@@ -1147,17 +1147,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   background: var(--fcc-surface);
   flex: none;
 }
-.ed__title {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  font-size: 1rem;
-  font-weight: 650;
-  padding: 8px 6px;
-  color: inherit;
-}
-.ed__title:focus { outline: none; background: var(--fcc-surface-container); border-radius: var(--fcc-radius-s); }
+.ed__toolbar-gap { flex: 1; min-width: 0; }
 .ed__toolbar .icon-btn:disabled { opacity: .3; cursor: default; }
 
 .ed__banner, .ed__parent { margin: 8px 12px 0; flex: none; }
@@ -1180,22 +1170,78 @@ button, input, textarea, select { font: inherit; color: inherit; }
   flex: none;
 }
 
-.ed__body-wrap { flex: 1; min-height: 0; display: flex; padding: 0 4px; }
-.ed__body {
+/*
+  タイトル・手掛かり・本文は 1 枚の紙。
+  本文だけを内側でスクロールさせず、ここ（.ed__doc）でまとめて動かす。
+*/
+.ed__doc {
   flex: 1;
-  width: 100%;
   min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+}
+.ed__doc-inner { padding: 0 4px; }
+
+/* 境界線は引かず、文字の大きさで役割を分ける（圧迫感を出さない） */
+.ed__head { padding: 14px 12px 0; }
+.ed__title {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 1.32rem;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 2px 0;
+}
+.ed__title::placeholder { color: var(--fcc-outline); font-weight: 600; }
+.ed__title:focus { outline: none; }
+
+.ed__cue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--fcc-primary);
+}
+.ed__cue-icon { display: flex; flex: none; opacity: .8; }
+.ed__cue-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: .95rem;
+  font-weight: 600;
+  line-height: 1.7;
+  padding: 2px 0;
+}
+.ed__cue-input::placeholder { color: var(--fcc-outline); font-weight: 400; }
+.ed__cue-input:focus { outline: none; }
+.ed__cue-hint {
+  font-size: .72rem;
+  color: var(--fcc-on-surface-variant);
+  padding: 2px 0 0 22px;
+}
+.ed__cue-hint[hidden] { display: none; }
+
+.ed__body {
+  display: block;
+  width: 100%;
   resize: none;
   border: 0;
   outline: none;
   background: transparent;
   color: inherit;
-  padding: 16px 12px 24px;
+  padding: 10px 12px 32px;
   line-height: 1.9;
   font-size: 16px;
   white-space: pre-wrap;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  overflow: hidden;
 }
 
 .ed__find {
@@ -1269,9 +1315,38 @@ button, input, textarea, select { font: inherit; color: inherit; }
 
 /* 広い画面では、本文の 1 行が長くなりすぎないようにする */
 @media (min-width: 900px) {
-  .ed__body { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
+  .ed__doc-inner { max-width: 820px; margin: 0 auto; padding: 0; }
+  .ed__head { padding: 28px 16px 0; }
+  .ed__body { padding: 12px 16px 64px; }
   .ed__toolbar, .ed__status, .ed__shortcuts { padding-left: 16px; padding-right: 16px; }
 }
+
+/* 集中モード：本文だけを残す */
+.ed[data-bare="true"] .ed__shortcuts { display: none; }
+
+/* カーソルの位置を測るための影（画面には出さない） */
+.ed__mirror {
+  position: absolute;
+  top: -9999px;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* 文字数はボタン（押すと内訳が出る） */
+.ed__status-count {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 2px 4px;
+  border-radius: var(--fcc-radius-s);
+  cursor: pointer;
+}
+.ed__status-count:hover { background: var(--fcc-surface-container-high); }
 
 /* --- バックアップの状態 --- */
 .appbar__backup {
