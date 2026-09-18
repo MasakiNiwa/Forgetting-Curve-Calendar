@@ -31,12 +31,29 @@ export class LocalStorageAdapter {
     }
   }
 
+  /**
+   * 最後に保存したタブの印だけを読む。
+   * 別タブの保存を見張るために、毎回すべてを読み解くのは重いので、
+   * 小さなキーを別に置いてここだけを見る。
+   * まだ印が無い（このしくみの前に保存されたデータ）ときは undefined を返す。
+   */
+  async token() {
+    try {
+      const raw = window.localStorage.getItem(`${this.key}.token`);
+      return raw === null ? undefined : raw;
+    } catch {
+      return undefined;
+    }
+  }
+
   async save(data) {
     window.localStorage.setItem(this.key, JSON.stringify(data));
+    window.localStorage.setItem(`${this.key}.token`, data?.meta?.saveToken ?? '');
   }
 
   async clear() {
     window.localStorage.removeItem(this.key);
+    window.localStorage.removeItem(`${this.key}.token`);
   }
 }
 
@@ -50,6 +67,7 @@ export class MemoryAdapter {
   }
 
   async load() { return this.data; }
+  async token() { return this.data ? (this.data.meta?.saveToken ?? '') : undefined; }
   async save(data) { this.data = JSON.parse(JSON.stringify(data)); }
   async clear() { this.data = null; }
 }

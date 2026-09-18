@@ -4,7 +4,7 @@ import { icon } from '../icons.js';
 import { emptyState } from '../components.js';
 import { activityHeatmap, monthlyBars, ratingBar } from '../charts.js';
 import { startReviewSession } from '../reviewSession.js';
-import { openMissionSheet } from '../missions.js';
+import { openMissionSheet, omikujiCard } from '../missions.js';
 import { focusDate } from './calendar.js';
 import { navigate } from '../router.js';
 import { RATINGS } from '../../core/curve.js';
@@ -56,6 +56,7 @@ export function renderStats(store) {
         stat(ms.streak.current || 0, '連続達成', ms.streak.best ? `最長 ${ms.streak.best}日` : null),
         stat(`Lv.${ms.level.level}`, ms.level.rank),
         stat(ms.level.points, '記憶ポイント', `次まで ${ms.level.toNext}`)),
+      ms.omikuji ? omikujiCard(ms.omikuji) : null,
       button('今日のミッションを見る', {
         className: 'btn btn--tonal btn--block',
         icon: icon('mission', { size: 18 }),

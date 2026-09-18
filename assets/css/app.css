@@ -455,7 +455,31 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .rating-btn--vague { --rating-color: var(--fcc-rating-vague); }
 .rating-btn--forgot { --rating-color: var(--fcc-rating-forgot); }
 
-.notes-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+/*
+  検索・並び替え・絞り込みは、一覧をスクロールしても上に残す。
+  背景を敷き、少し左右へ広げてカードが裏を通り抜けても見えないようにする。
+*/
+.notes-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: 0 -16px;
+  padding: 8px 16px 10px;
+  background: var(--fcc-surface);
+  border-bottom: 1px solid transparent;
+}
+.notes-sticky[data-stuck="true"] {
+  border-bottom-color: var(--fcc-outline-variant);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .04);
+}
+.notes-sticky__sentinel { height: 1px; margin-bottom: -1px; }
+.notes-list { margin-top: 16px; }
+.notes-more { margin-top: 12px; }
+.notes-more[hidden] { display: none; }
+/* 固定する帯なので、縦に場所を取りすぎないよう 1 行にまとめる */
+.notes-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.notes-toolbar .search { flex: 1; min-width: 0; }
+.notes-toolbar .select { flex: 0 1 auto; width: auto; max-width: 46%; }
 .search {
   display: flex; align-items: center; gap: 8px;
   padding: 0 14px;
@@ -636,8 +660,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 
 @media (min-width: 720px) {
   .fab__label { display: inline; }
-  .notes-toolbar { flex-direction: row; align-items: center; }
-  .search { flex: 1; }
+  .notes-toolbar .select { max-width: none; }
 }
 
 @media (min-width: 1000px) {
@@ -1637,3 +1660,67 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .mission-recap__icon { display: flex; flex: none; }
 .mission-recap__title { font-size: .84rem; font-weight: 650; }
 .mission-recap .field__hint { color: inherit; opacity: .85; }
+
+/* ==========================================================================
+   やる気くじ
+   ========================================================================== */
+
+.omikuji {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: var(--fcc-radius-l);
+  background: var(--fcc-surface-container);
+  text-align: center;
+  border: 1px solid var(--fcc-outline-variant);
+}
+.omikuji--locked, .omikuji--ready {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 12px 14px;
+}
+.omikuji--ready {
+  background: var(--fcc-primary-container);
+  color: var(--fcc-on-primary-container);
+  border-color: transparent;
+}
+.omikuji__locked-icon { display: flex; flex: none; opacity: .9; }
+.omikuji__locked-title { font-size: .9rem; font-weight: 700; }
+.omikuji--locked .field__hint, .omikuji--ready .field__hint { color: inherit; opacity: .8; }
+
+.omikuji__head {
+  font-size: .72rem;
+  letter-spacing: .12em;
+  color: var(--fcc-on-surface-variant);
+}
+.omikuji__rank {
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1.3;
+  color: var(--fcc-primary);
+}
+/* 上の運勢ほど華やかに（ただし、悪い運勢は作らない） */
+.omikuji[data-rank="daidaikichi"] .omikuji__rank,
+.omikuji[data-rank="daikichi"] .omikuji__rank { color: var(--fcc-warning); }
+.omikuji[data-rank="daidaikichi"] { border-color: var(--fcc-warning); }
+.omikuji__lead { font-size: .8rem; color: var(--fcc-on-surface-variant); }
+.omikuji__focus {
+  display: inline-block;
+  margin: 10px 0 6px;
+  padding: 2px 12px;
+  border-radius: var(--fcc-radius-full);
+  background: var(--fcc-surface-container-highest);
+  font-size: .72rem;
+  font-weight: 700;
+}
+.omikuji__text { margin: 0; font-size: .92rem; line-height: 1.8; }
+.omikuji--fresh { animation: fcc-omikuji-in 420ms var(--fcc-ease-standard); }
+@keyframes fcc-omikuji-in {
+  0% { transform: translateY(10px) scale(.96); opacity: 0; }
+  60% { transform: translateY(0) scale(1.02); opacity: 1; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .omikuji--fresh { animation: none; }
+}

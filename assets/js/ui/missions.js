@@ -6,11 +6,12 @@
  *   - カレンダーの帯（ホームに戻ったときの「今日やること」）
  *   - ボトムシート（内訳・連続・レベル）
  */
-import { h, append, clear } from './dom.js';
+import { h, append, button, clear } from './dom.js';
 import { icon } from './icons.js';
 import { openSheet, openDialog, toast } from './overlays.js';
 import { svgFromMarkup } from './components.js';
 import { MAX_SHIELDS, SHIELD_EVERY, COMPLETE_BONUS } from '../core/missions.js';
+import { FORTUNES } from '../core/omikuji.js';
 import { formatLong, todayKey } from '../core/date.js';
 
 const RING = 2 * Math.PI * 15.5;
@@ -151,6 +152,8 @@ export function openMissionSheet(store) {
               h('span', { class: 'mission-card__points' }, `+${m.points} pt`))))),
       ),
 
+      omikujiBlock(store, state, { onDraw: render }),
+
       recapRow(store),
 
       state.allDone
@@ -171,6 +174,56 @@ export function openMissionSheet(store) {
   // 開いている間に達成したら、その場で表示を更新する
   const unsubscribe = store.subscribe(() => render());
   return openSheet({ title: 'デイリーミッション', content, onClose: unsubscribe });
+}
+
+/* ------------------------------------------------------------------ */
+/* やる気くじ                                                           */
+/* ------------------------------------------------------------------ */
+
+/** 引いた結果の札 */
+export function omikujiCard(result, { fresh = false } = {}) {
+  return h('div', { class: `omikuji ${fresh ? 'omikuji--fresh' : ''}`, 'data-rank': result.rank.id },
+    h('div', { class: 'omikuji__head' }, '今日のやる気くじ'),
+    h('div', { class: 'omikuji__rank' }, result.rank.label),
+    h('div', { class: 'omikuji__lead' }, result.rank.lead),
+    h('div', { class: 'omikuji__focus' }, result.fortune.focus),
+    h('p', { class: 'omikuji__text' }, result.fortune.text));
+}
+
+/** シートの中の、くじの場所 */
+function omikujiBlock(store, state, { onDraw } = {}) {
+  if (state.omikuji) return omikujiCard(state.omikuji);
+  if (!state.canDrawOmikuji) {
+    return h('div', { class: 'omikuji omikuji--locked' },
+      h('span', { class: 'omikuji__locked-icon', html: icon('omikuji', { size: 22 }) }),
+      h('div', {},
+        h('div', { class: 'omikuji__locked-title' }, '今日のやる気くじ'),
+        h('div', { class: 'field__hint' },
+          `今日のミッションを全部そろえると引けます（${FORTUNES.length} 種類の占いから 1 つ）。`)));
+  }
+  return h('div', { class: 'omikuji omikuji--ready' },
+    h('span', { class: 'omikuji__locked-icon', html: icon('omikuji', { size: 22 }) }),
+    h('div', { style: { flex: '1' } },
+      h('div', { class: 'omikuji__locked-title' }, 'やる気くじが引けます'),
+      h('div', { class: 'field__hint' }, '今日のぶんは 1 回だけ。')),
+    button('引く', {
+      className: 'btn',
+      onClick: () => {
+        const result = store.drawOmikuji();
+        if (result) showOmikuji(result);
+        onDraw?.();
+      },
+    }));
+}
+
+/** 引いた結果を、大きく見せる */
+export function showOmikuji(result) {
+  return openDialog({
+    title: '',
+    variant: 'alert',
+    content: h('div', {}, omikujiCard(result, { fresh: true })),
+    actions: [{ label: '受け取る', className: 'btn', onClick: (close) => close() }],
+  });
 }
 
 /**
@@ -242,10 +295,18 @@ export function celebrate(store, result) {
         ? h('p', { class: 'celebrate__text' }, `空いた ${result.usedShields} 日は、おまもりが守りました。`)
         : null,
       h('p', { class: 'celebrate__text celebrate__text--muted' },
-        'また明日、新しいお題が出ます。忘れた頃に、ここで会いましょう。')),
+        '今日のやる気くじが引けます。また明日、新しいお題が出ます。')),
     actions: [
       { label: '内訳を見る', className: 'btn btn--text', onClick: (close) => { close(); openMissionSheet(store); } },
-      { label: 'ありがとう', className: 'btn', onClick: (close) => close() },
+      {
+        label: 'やる気くじを引く',
+        className: 'btn',
+        onClick: (close) => {
+          close();
+          const result = store.drawOmikuji();
+          if (result) showOmikuji(result);
+        },
+      },
     ],
   });
 }
