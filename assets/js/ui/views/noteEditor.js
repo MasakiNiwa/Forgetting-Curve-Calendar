@@ -11,7 +11,9 @@ import { openSheet, openMenu, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
 import { branchTree, curvePreview, reviewTimeline, tagChips } from '../components.js';
 import { navigate, replacePath } from '../router.js';
+import { focusNote } from './notes.js';
 import { TextEditor } from '../../editor/textEditor.js';
+import { EditHistory } from '../../editor/history.js';
 import {
   PRESETS, SPREADS, baseIntervalsOf, getPreset, getSpread, randomSeed, resolveIntervals,
   sanitizeIntervals, spreadIdOf, spreadIntervals,
@@ -24,6 +26,31 @@ import {
 
 /** メモごとのカーソル位置とスクロール位置を覚えておく */
 const positions = new Map();
+
+/**
+ * メモごとの編集履歴。
+ * 一覧へ戻ってまた開いても「元に戻す」が続けられるように、この画面を離れても捨てない。
+ * （タブを閉じるまで。増えすぎないよう、直近のぶんだけ持つ）
+ */
+const histories = new Map();
+const HISTORY_KEEP = 8;
+
+function historyFor(key) {
+  let history = histories.get(key);
+  if (!history) {
+    history = new EditHistory();
+    histories.set(key, history);
+  } else {
+    // 使ったものを新しい側へ回す（古いものから捨てるため）
+    histories.delete(key);
+    histories.set(key, history);
+  }
+  while (histories.size > HISTORY_KEEP) {
+    histories.delete(histories.keys().next().value);
+  }
+  return history;
+}
+
 
 /** 現在開いている編集セッション（画面が切り替わるときに片付ける） */
 let active = null;
@@ -57,14 +84,20 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     seed: existing ? (existing.schedule.seed ?? 0) : randomSeed(),
   };
 
-  // 未保存の書きかけがあれば、それを優先して開く
-  const restored = draft && !isEmptyDraft(draft.value) && draft.value.body !== state.body;
-  if (draft && !isEmptyDraft(draft.value)) Object.assign(state, draft.value);
+  // 未保存の書きかけがあれば、それを優先して開く。
+  // 既存メモを空にした書きかけも「編集の結果」なので拾う（中身が空でも捨てない）。
+  const draftDiffers = Boolean(draft) && String(draft.value?.body ?? '') !== state.body;
+  const usableDraft = draft && (!isEmptyDraft(draft.value) || (state.id && draftDiffers));
+  const restored = Boolean(usableDraft) && draftDiffers;
+  if (usableDraft) Object.assign(state, draft.value);
 
   let saveTimer = null;
-  let saving = false;
   let dirty = false;
   let lastError = null;
+  /** 入力のたびに進む番号。保存の前後で見比べて「保存中の入力」を取りこぼさない。 */
+  let revision = 0;
+  /** 保存は必ず 1 本の列に並べる（同時に走らせない） */
+  let chain = Promise.resolve({ ok: true });
 
   /* ---------------------------------------------------------- 画面 */
 
@@ -138,6 +171,19 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       else if (composing) updateStats();
     },
     onSelectionChange: () => updateStats(),
+    // Esc は、まず検索バーを閉じる。開いていなければ Tab でフォーカスを移せるようにする
+    onEscape: () => {
+      if (findBar.hidden) return false;
+      toggleFind(false);
+      return true;
+    },
+    onTabEscape: () => {
+      setStatus('Tab でツールバーへ移動します', 'warn');
+      setTimeout(() => { if (!dirty) setStatus(state.id ? '保存済み' : '新しいメモ'); }, 2500);
+    },
+  }, {
+    // 同じメモを開き直したら、さっきまでの「元に戻す」を続けられるようにする
+    history: historyFor(key),
   });
 
   buildShortcuts();
@@ -149,26 +195,39 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   function markDirty() {
     dirty = true;
+    revision += 1;
     setStatus('未保存');
-    if (!isEmptyDraft(state)) {
+    if (state.id || !isEmptyDraft(state)) {
+      // 既存メモは空にした状態も下書きに残す（古い本文が復活しないように）
       const ok = saveDraft(key, state);
       if (!ok) setStatus('書きかけを保存できませんでした', 'warn');
+    } else {
+      clearDraft(key);
     }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { save(); }, SAVE_DEBOUNCE);
   }
 
-  async function save({ immediate = false } = {}) {
+  /**
+   * 保存する。呼び出しは 1 本の列に並べるので、
+   * 保存中にもう一度呼んでも「成功した」ことにはならない（取りこぼさない）。
+   */
+  function save(options) {
+    chain = chain.then(() => doSave(options), () => doSave(options));
+    return chain;
+  }
+
+  async function doSave({ immediate = false } = {}) {
     clearTimeout(saveTimer);
-    if (saving) return { ok: true };
     if (!dirty && state.id) return { ok: true };
-    if (isEmptyDraft(state)) {
+    if (isEmptyDraft(state) && !state.id) {
       // 空のまま閉じても、不要なメモを作らない
-      setStatus(state.id ? '未保存' : '');
+      setStatus('');
       return { ok: true };
     }
 
-    saving = true;
+    // ここで見た番号のまま保存できたときだけ「保存済み」にする
+    const rev = revision;
     setStatus('保存しています…');
 
     if (state.id) {
@@ -193,11 +252,12 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         seed: state.seed,
       });
       state.id = created.id;
+      // 「新規」の履歴を、そのままこのメモの履歴として引き継ぐ
+      histories.set(draftKey({ noteId: created.id }), editor.history);
       replacePath(['note', created.id], { from: returnTo });
     }
 
     const result = await store.flush();
-    saving = false;
 
     if (!result.ok) {
       lastError = result.error;
@@ -207,9 +267,17 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     }
 
     lastError = null;
-    dirty = false;
-    clearDraft(key);
-    setStatus('保存済み');
+    if (rev === revision) {
+      // 保存中に書き足されていなければ、これで最新が残っている
+      dirty = false;
+      clearDraft(key);
+      setStatus('保存済み');
+    } else {
+      // 保存中の入力は次の保存で残す（「保存済み」とは言わない）
+      setStatus('未保存');
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => { save(); }, SAVE_DEBOUNCE);
+    }
     if (immediate) toast('保存しました');
     return result;
   }
@@ -393,6 +461,28 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       items: [
         { label: '表示設定', icon: icon('text', { size: 20 }), description: '文字サイズと折り返し', onClick: () => openDisplaySettings(store) },
         { label: 'メモ情報', icon: icon('info', { size: 20 }), description: '手掛かり・タグ・復習の設定', onClick: () => openInfoPanel() },
+        // メモ帳として使う人が、復習を付けずに書き留められるようにする
+        state.presetId === 'none' || note?.status === 'inbox' ? {
+          label: '復習を始める',
+          icon: icon('play', { size: 20 }),
+          description: '今日を起点に忘却曲線を組む',
+          onClick: () => {
+            state.presetId = store.settings.presetId;
+            state.intervals = resolveIntervals(state.presetId, store.settings);
+            if (state.id) store.restartNote(state.id, { presetId: state.presetId });
+            toast('今日を起点に復習を組みました');
+          },
+        } : {
+          label: '復習を付けない',
+          icon: icon('skip', { size: 20 }),
+          description: 'メモだけ残して、予定はあとで決める',
+          onClick: () => {
+            state.presetId = 'none';
+            state.intervals = [];
+            if (state.id) store.updateNote(state.id, { presetId: 'none', intervals: [] });
+            toast('復習を付けずに保存します');
+          },
+        },
         note ? {
           label: '追加メモを書く',
           icon: icon('branch', { size: 20 }),
@@ -492,7 +582,14 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   /* ---------------------------------------------------------- 後始末 */
 
   async function leave() {
-    await save({ immediate: false });
+    const result = await save({ immediate: false });
+    if (!result.ok) {
+      // 保存できていないのに画面を離れると、再試行もコピーもできなくなる
+      showSaveError();
+      toast('保存できませんでした。この画面に残ります。');
+      return;
+    }
+    if (state.id) focusNote(state.id);
     navigate(returnTo);
   }
 

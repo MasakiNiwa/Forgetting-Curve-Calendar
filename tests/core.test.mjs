@@ -17,6 +17,7 @@ import {
   DEFAULT_SETTINGS, bodyPreview, createNote, displayTitle, makeEventId, normalizeData, recallCue,
 } from '../assets/js/core/models.js';
 import { migrate } from '../assets/js/core/migrations.js';
+import { SCHEMA_VERSION } from '../assets/js/core/config.js';
 import {
   advanceStreak, createStreak, levelInfo, pickMissions, pointsForLevel,
 } from '../assets/js/core/missions.js';
@@ -334,7 +335,7 @@ test('migration: v1 のデータを移行しても予定日が変わらない（
   };
   const migrated = normalizeData(migrate(v1));
   const note = migrated.notes[0];
-  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
   assert.equal(note.events.length, 1);
   assert.equal(note.events[0].type, 'rate');
   assert.equal(note.schedule.ease, 2.6, '定着度が再現される');
@@ -464,7 +465,7 @@ test('migration: v2 のデータに分散シードが割り当てられる', () 
     meta: {},
   };
   const data = normalizeData(migrate(v2));
-  assert.equal(data.schemaVersion, 4);
+  assert.equal(data.schemaVersion, SCHEMA_VERSION);
   const [a, b] = data.notes;
   assert.ok(Number.isInteger(a.origin.seed) && Number.isInteger(b.origin.seed));
   assert.notEqual(a.origin.seed, b.origin.seed, 'メモごとに違うシード');
@@ -970,7 +971,7 @@ test('store: ミッションの記録はバックアップに含まれ、統合�
 test('migrations: v3 のデータにミッションの入れ物が足される', () => {
   const v3 = { schemaVersion: 3, notes: [], settings: {}, meta: {} };
   const migrated = migrate(v3);
-  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
   assert.equal(migrated.progress.points, 0);
   assert.equal(migrated.progress.streak.current, 0);
 });
@@ -999,4 +1000,116 @@ test('missions: 設定でオフにすると判定も動かない', async () => {
   assert.equal(store.syncMissions(), null);
   assert.equal(store.markMissionFlag('peeked'), false);
   assert.equal(store.data.progress.points, 0);
+});
+
+/* --------------------------------------------- v0.6.1: 活動の記録と保存の正確さ */
+
+test('store: 書き足しても、過去に書いた日が消えない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+  const d15 = addDays(today, -3);
+  const d17 = addDays(today, -1);
+
+  const note = store.addNote({ body: '15日に書いたメモ' });
+  // 15日・17日に手を動かしたことにする
+  note.createdAt = new Date(`${d15}T10:00:00`).toISOString();
+  note.contentUpdatedAt = new Date(`${d17}T10:00:00`).toISOString();
+  store.data.activity = {};
+  store.recordTouch(note.id, 12, d15);
+  store.recordTouch(note.id, 8, d17);
+
+  // 今日また書き足す（contentUpdatedAt は今日に上書きされる）
+  store.updateNote(note.id, { body: '15日に書いたメモ\n今日の追記' });
+
+  const days = store.touchedDays();
+  assert.equal(days.has(d15), true, '書いた日は残る');
+  assert.equal(days.has(d17), true, '書き足した日も残る');
+  assert.equal(days.has(today), true, '今日も数える');
+});
+
+test('store: 今日の積み重ねを数えられる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const note = store.addNote({ body: '12345' });
+  assert.equal(store.activityOf().chars, 5);
+  store.updateNote(note.id, { body: '1234567890' });
+  assert.equal(store.activityOf().chars, 10, '増えた分だけ足す');
+  store.updateNote(note.id, { body: '1' });
+  assert.equal(store.activityOf().chars, 10, '削っても目減りしない');
+  assert.equal(store.activityOf().notes.length, 1, '同じメモは 1 件として数える');
+
+  const recap = store.recap();
+  assert.equal(recap.written, 1);
+  assert.equal(recap.touched, 1);
+});
+
+test('store: 活動の記録も別タブと統合できる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+  store.recordTouch('n_a', 100, today);
+  const changed = store.mergeActivity({
+    [today]: { notes: ['n_b'], chars: 40 },
+    [addDays(today, -1)]: { notes: ['n_c'], chars: 10 },
+  });
+  assert.equal(changed, true);
+  assert.deepEqual(store.activityOf(today).notes.sort(), ['n_a', 'n_b']);
+  assert.equal(store.activityOf(today).chars, 100, '多い方を残す');
+  assert.equal(store.touchedDays().has(addDays(today, -1)), true);
+});
+
+test('migrations: v4 の文字数が活動の記録へ移る', () => {
+  const day = '2026-09-17';
+  const v4 = {
+    schemaVersion: 4,
+    notes: [],
+    settings: {},
+    progress: { points: 10, streak: {}, days: { [day]: { ids: [], done: [], chars: 320 } } },
+    meta: {},
+  };
+  const migrated = normalizeData(migrate(v4));
+  assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
+  assert.equal(migrated.activity[day].chars, 320);
+  assert.equal(migrated.progress.points, 10, 'ポイントはそのまま');
+});
+
+test('store: バックアップに活動の記録も含まれる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  store.recordTouch('n_x', 50);
+  const raw = JSON.parse(JSON.stringify(store.exportData()));
+  const restored = new Store(new MemoryAdapter());
+  await restored.load();
+  restored.importData(raw, 'replace');
+  assert.equal(restored.activityOf().chars, 50);
+});
+
+test('store: 1 つ達成した時点で、その日は「続いた日」になる', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const today = todayKey();
+  store.syncMissions(today);
+
+  // お題を 2 つに固定し、片方だけ満たす
+  const record = store.data.progress.days[today];
+  record.ids = ['write-one', 'peek-future'];
+  record.targets = { 'write-one': 1, 'peek-future': 1 };
+  record.done = [];
+  record.streakAt = null;
+  record.bonusAt = null;
+
+  store.addNote({ body: '1 つだけ達成する' });
+  const partial = store.syncMissions(today);
+  assert.equal(partial.state.allDone, false, 'まだ全部ではない');
+  assert.equal(partial.justCompletedAll, false, 'ボーナスはまだ');
+  assert.equal(store.data.progress.streak.current, 1, '1 つでも連続は続く');
+  assert.equal(store.data.progress.points, 15, 'ボーナスはまだ乗らない');
+
+  // 残りも満たすと、ボーナスが乗る（連続は二重に数えない）
+  store.markMissionFlag('peeked', today);
+  const all = store.syncMissions(today);
+  assert.equal(all.justCompletedAll, true);
+  assert.equal(store.data.progress.streak.current, 1, '同じ日に二度数えない');
+  assert.equal(store.data.progress.points, 15 + 10 + 20);
 });

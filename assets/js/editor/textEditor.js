@@ -10,16 +10,23 @@ import { EditHistory } from './history.js';
 export class TextEditor {
   /**
    * @param {HTMLTextAreaElement} el
-   * @param {{onChange?:Function, onSelectionChange?:Function}} hooks
+   * @param {{onChange?:Function, onSelectionChange?:Function, onEscape?:Function,
+   *          onTabEscape?:Function}} hooks
+   * @param {{history?:EditHistory}} options 履歴を渡すと、同じメモの続きとして扱う
    */
-  constructor(el, hooks = {}) {
+  constructor(el, hooks = {}, { history } = {}) {
     this.el = el;
     this.hooks = hooks;
-    this.history = new EditHistory();
+    this.history = history || new EditHistory();
     this.commands = new Map();
     this.composing = false;
+    /** Esc のあとの Tab は、字下げではなくフォーカス移動に使う */
+    this.tabMovesFocus = false;
 
-    this.history.reset(this.snapshot());
+    // 渡された履歴が今の本文と食い違うときだけ、作り直す
+    if (!history || !history.current || history.current.text !== this.el.value) {
+      this.history.reset(this.snapshot());
+    }
     this.#bind();
     registerDefaultCommands(this);
   }
@@ -86,11 +93,16 @@ export class TextEditor {
 
   /* ---------------------------------------------------------- 行の操作 */
 
-  /** 選択範囲にかかる行の範囲を返す */
+  /**
+   * 選択範囲にかかる行の範囲を返す。
+   * 選択の終わりが次の行の先頭にあるときは、その行は含めない
+   * （一般的なエディタと同じく、改行までの選択は 1 行の選択として扱う）。
+   */
   lineRange(start = this.selection.start, end = this.selection.end) {
     const text = this.el.value;
     const from = text.lastIndexOf('\n', start - 1) + 1;
-    let to = text.indexOf('\n', end);
+    const scanFrom = end > start && end > from && text[end - 1] === '\n' ? end - 1 : end;
+    let to = text.indexOf('\n', scanFrom);
     if (to === -1) to = text.length;
     return { from, to };
   }
@@ -129,11 +141,11 @@ export class TextEditor {
     return this;
   }
 
+  /** コマンドを実行する。何もしなかったときは false（キー操作を横取りしない）。 */
   run(id, payload) {
     const command = this.commands.get(id);
     if (!command) return false;
-    command.run(this, payload);
-    return true;
+    return command.run(this, payload) !== false;
   }
 
   /** キー操作をコマンドへ振り分ける。処理したら true。 */
@@ -143,9 +155,22 @@ export class TextEditor {
 
     if (mod && key === 'z' && !event.shiftKey) { this.run('undo'); return true; }
     if ((mod && key === 'y') || (mod && event.shiftKey && key === 'z')) { this.run('redo'); return true; }
+
+    // Esc → 次の Tab はフォーカス移動（キーボードだけで本文欄から出られるように）
+    if (key === 'escape' && !mod) {
+      if (this.hooks.onEscape?.() === true) return true;
+      this.tabMovesFocus = true;
+      this.hooks.onTabEscape?.();
+      return true;
+    }
     if (key === 'tab' && !mod) {
+      if (this.tabMovesFocus) { this.tabMovesFocus = false; return false; }
       this.run(event.shiftKey ? 'outdent' : 'indent');
       return true;
+    }
+    if (key === 'enter' && !mod && !event.shiftKey && this.run('newline')) return true;
+    if (key !== 'shift' && key !== 'control' && key !== 'meta' && key !== 'alt') {
+      this.tabMovesFocus = false;
     }
     for (const [id, command] of this.commands) {
       if (!command.key) continue;
@@ -229,11 +254,22 @@ function buildLine({ indent, marker, text }) {
  * すでに全行がその記号なら外し、そうでなければ付け替える。
  */
 function toggleMarker(editor, marker) {
+  const { start, end } = editor.selection;
   const { from, to } = editor.lineRange();
   const block = editor.el.value.slice(from, to);
   const lines = block.split('\n');
   const targets = lines.filter((l) => l.trim());
-  if (!targets.length) return;
+
+  if (!targets.length) {
+    // 空行で押したときは、行頭記号を置いてそのまま書き始められるようにする
+    if (start !== end) return;
+    const parsed = parseLine(lines[0] ?? '');
+    const prefix = buildLine({ indent: parsed.indent, marker, text: '' });
+    const caret = from + prefix.length;
+    editor.replaceRange(from, to, prefix, { select: [caret, caret] });
+    editor.focus({ start: caret, end: caret });
+    return;
+  }
 
   const matches = (m) => (marker === 'todo' ? m === 'todo' || m === 'done' : m === marker);
   const allMarked = targets.every((l) => matches(parseLine(l).marker));
@@ -285,6 +321,27 @@ export function registerDefaultCommands(editor) {
         }).join('\n');
         if (mapped === block) return;
         ed.replaceRange(from, to, mapped, { select: [from, from + mapped.length] });
+      },
+    })
+    .registerCommand('newline', {
+      label: '改行',
+      // 箇条書きの続きは自動で作る。空の項目で改行したら、そこで終わる。
+      run: (ed) => {
+        const { start, end } = ed.selection;
+        if (start !== end) return false;
+        const { from, to } = ed.lineRange(start, start);
+        if (start !== to) return false;   // 行の途中では普通の改行
+        const parsed = parseLine(ed.el.value.slice(from, to));
+        if (!parsed.marker) return false;
+        if (!parsed.text.trim()) {
+          const caret = from + parsed.indent.length;
+          ed.replaceRange(from, to, parsed.indent, { select: [caret, caret] });
+          return true;
+        }
+        const marker = parsed.marker === 'done' ? 'todo' : parsed.marker;
+        const prefix = buildLine({ indent: parsed.indent, marker, text: '' });
+        ed.replaceRange(start, start, `\n${prefix}`);
+        return true;
       },
     })
     .registerCommand('indent', {
