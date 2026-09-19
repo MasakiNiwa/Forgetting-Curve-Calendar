@@ -1313,7 +1313,12 @@ button, input, textarea, select { font: inherit; color: inherit; }
   accent-color: var(--fcc-primary);
   cursor: pointer;
 }
-.rt li[data-checked="true"] > div { color: var(--fcc-on-surface-variant); text-decoration: line-through; }
+/* 済みのチェックは、読むときと同じように薄く見せる（中の段落まで届かせる） */
+.rt li[data-checked="true"] > div,
+.rt li[data-checked="true"] > div > p {
+  color: var(--fcc-on-surface-variant);
+  text-decoration: line-through;
+}
 .rt blockquote {
   margin: 0 0 .7em;
   padding: .1em 0 .1em .9em;
