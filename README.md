@@ -69,7 +69,8 @@
 
 - 依存ライブラリなしの **静的サイト**（ES Modules / CSS Custom Properties）
 - Material Design 3 を参考にしたカラートークンとコンポーネント
-- データは `localStorage`。ストレージ層を抽象化しており、将来の同期実装に差し替え可能
+- データは `IndexedDB` にメモ 1 件ずつ（使えない環境では `localStorage` へ自動で切り替え）。
+  ストレージ層を抽象化しており、将来の同期実装に差し替え可能
 
 ```
 index.html

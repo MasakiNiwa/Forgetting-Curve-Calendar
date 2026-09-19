@@ -22,7 +22,7 @@ import {
 } from './missions.js';
 import { drawOmikuji, readOmikuji } from './omikuji.js';
 import { migrate } from './migrations.js';
-import { createDefaultAdapter } from './storage.js';
+import { createDefaultAdapter, splitData } from './storage.js';
 
 /** 保存をまとめる時間。入力のたびに全部を書き出すと重いので少し待つ。 */
 const SAVE_COALESCE_MS = 400;
@@ -37,6 +37,16 @@ const IMMEDIATE_EVENTS = new Set([
   'note:add', 'note:delete', 'note:restore', 'note:archive',
   'data:import', 'data:clear', 'backup:saved',
   'missions:omikuji', 'missions:update', 'settings:update',
+]);
+
+/**
+ * メモに触らない出来事。
+ * これらは「メモ以外」（設定・進み具合・活動記録）だけを書けば足りる。
+ * ここに無い・メモの id も分からない出来事は、安全側に倒して全部書き直す。
+ */
+const REST_ONLY_EVENTS = new Set([
+  'settings:update', 'backup:saved',
+  'missions:update', 'missions:flag', 'missions:omikuji', 'missions:celebrated',
 ]);
 
 /**
@@ -88,6 +98,16 @@ function mergeNote(ours, theirs) {
   return { note, changed, conflicted };
 }
 
+/** メモの版を覚えておく（id -> updatedAt） */
+function stampsOf(notes = []) {
+  return new Map(notes.map((n) => [n.id, n.updatedAt]));
+}
+
+/** 前回の保存以降に変わったものの記録 */
+function freshDirty() {
+  return { notes: new Set(), removed: new Set(), rest: false, all: false };
+}
+
 /** 保存ごとの固有の印。どのタブが書いた内容かを見分けるために使う。 */
 function makeSaveToken() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -116,6 +136,20 @@ export class Store {
     this._revision = 0;
     this._contextCache = null;
     /**
+     * 保存できているメモの版（id -> updatedAt）。
+     * 次の保存で「どのメモが変わったか」を見分けるために持つ。
+     * null は「まだ何も保存できていない（＝全部書く）」。
+     */
+    this._savedStamp = null;
+    /** 前回の保存以降に変わったもの */
+    this._dirty = freshDirty();
+    /**
+     * 「このタブが書いてよい」ことを保存先で確かめたか。
+     * 書けるタブは 1 つだけなので、読み込み直後に一度だけ確かめれば足りる。
+     * 毎回確かめると、保存のたびに余計な読み出しが増えて遅くなる。
+     */
+    this._verifiedWriter = false;
+    /**
      * 「見るだけ」のタブか。
      * 同じデータを 2 つのタブが書くと取り返しがつかないので、書けるのは 1 つだけにする。
      */
@@ -132,6 +166,8 @@ export class Store {
 
   /** このタブで書いてよいかを切り替える */
   setReadOnly(value) {
+    // 書けるタブに戻ったときは、保存先の状態をもう一度確かめる
+    if (this.readOnly && !value) this._verifiedWriter = false;
     this.readOnly = Boolean(value);
     this.emit({ type: 'tab:mode', readOnly: this.readOnly });
   }
@@ -142,6 +178,12 @@ export class Store {
     const raw = await this.adapter.load();
     this.data = raw ? normalizeData(migrate(raw)) : createEmptyData();
     this.syncedToken = raw?.meta?.saveToken ?? null;
+    // 読み込んだ直後は「保存先と同じ」。ただし移行や修復で形が変わることがあるので、
+    // 初回（保存先が空）は全部書く扱いにする。
+    this._dirty = freshDirty();
+    this._verifiedWriter = false;
+    if (raw) this._savedStamp = stampsOf(this.data.notes);
+    else { this._savedStamp = null; this._dirty.all = true; }
     this.invalidate();
     return this.data;
   }
@@ -218,6 +260,8 @@ export class Store {
       this.data.notes = nextNotes;
       this.data.notes.forEach((n) => this.refresh(n));
     }
+    // 取り込んだあとは、どのメモが動いたか追い切れないので全部書き直す
+    if (changed) this._dirty.all = true;
     // 覚えておいた集計は、取り込みのあと必ず捨てる（古い数字を見せない）
     this.invalidate();
     this.syncedToken = token;
@@ -228,6 +272,10 @@ export class Store {
   /** アダプタを差し替える（将来の同期実装用） */
   async setAdapter(adapter, { migrateData = true } = {}) {
     this.adapter = adapter;
+    // 新しい保存先には、いちど全部を書く
+    this._savedStamp = null;
+    this._dirty.all = true;
+    this._verifiedWriter = false;
     if (migrateData) await this.persist();
   }
 
@@ -252,30 +300,47 @@ export class Store {
     if (this.readOnly) return { ok: false, readOnly: true };
 
     const run = async () => {
+      let planned = null;
       try {
-        // 別タブの保存は、小さな印だけ見て気づく（毎回すべてを読み解かない）
-        let storedToken;
-        if (typeof this.adapter.token === 'function') {
-          storedToken = await this.adapter.token();
-          // 印がまだ無いデータは、いちど中身を見て確かめる
-          if (storedToken === undefined) {
+        // 読み込んでから最初の 1 回だけ、別タブが先に書いていないかを確かめる
+        // （書けるタブは 1 つだけなので、そのあとは確かめ直さなくてよい）
+        if (!this._verifiedWriter) {
+          // 別タブの保存は、小さな印だけ見て気づく（毎回すべてを読み解かない）
+          let storedToken;
+          if (typeof this.adapter.token === 'function') {
+            storedToken = await this.adapter.token();
+            // 印がまだ無いデータは、いちど中身を見て確かめる
+            if (storedToken === undefined) {
+              const stored = await this.adapter.load();
+              storedToken = stored ? (stored.meta?.saveToken ?? null) : undefined;
+            }
+          } else {
             const stored = await this.adapter.load();
             storedToken = stored ? (stored.meta?.saveToken ?? null) : undefined;
           }
-        } else {
-          const stored = await this.adapter.load();
-          storedToken = stored ? (stored.meta?.saveToken ?? null) : undefined;
+          if (storedToken !== undefined && storedToken !== this.syncedToken) {
+            // 別のタブが先に保存している。上書きせず、取り込んでから書く
+            await this.reconcile();
+          }
         }
-        if (storedToken !== undefined && storedToken !== this.syncedToken) {
-          // 別のタブが先に保存している。上書きせず、取り込んでから書く
-          await this.reconcile();
-        }
+        // 何を書くかは、取り込みが済んだ「書く直前」に決める
+        // （待っている間に増えた変更も、次の保存で必ず拾えるようにする）
+        planned = this._takeSavePlan();
         const token = makeSaveToken();
         this.data.meta.updatedAt = new Date().toISOString();
         this.data.meta.appVersion = APP_VERSION;
         this.data.meta.saveToken = token;
-        await this.adapter.save(this.data);
+        // メモ単位で書ける保存先なら、変わったメモだけを書く
+        if (typeof this.adapter.saveDelta === 'function') {
+          // meta（印や更新時刻）はいま書き換えたので、あらためて取り直す
+          planned.plan.rest = splitData(this.data).rest;
+          await this.adapter.saveDelta(planned.plan);
+        } else {
+          await this.adapter.save(this.data);
+        }
         this.syncedToken = token;
+        this._savedStamp = planned.stamps;
+        this._verifiedWriter = true;
         if (this.lastSaveError) {
           this.lastSaveError = null;
           this.emit({ type: 'save:recovered' });
@@ -283,6 +348,8 @@ export class Store {
         return { ok: true };
       } catch (err) {
         console.error('[fcc] 保存に失敗しました', err);
+        // 書けなかったぶんは「まだ変わったまま」に戻す（次の保存で書き直す）
+        if (planned) this._restoreDirty(planned.dirty);
         this.lastSaveError = err;
         this.emit({
           type: 'error',
@@ -323,16 +390,26 @@ export class Store {
     clearTimeout(this._saveTimer);
     this._saveTimer = null;
     this._pendingSave = false;
+    const planned = this._takeSavePlan();
     try {
       const token = makeSaveToken();
       this.data.meta.updatedAt = new Date().toISOString();
       this.data.meta.appVersion = APP_VERSION;
       this.data.meta.saveToken = token;
-      this.adapter.saveSync(this.data);
+      planned.plan.rest = splitData(this.data).rest;
+      this.adapter.saveSync(this.data, planned.plan);
       this.syncedToken = token;
+      if (this.adapter.syncWriteIsDeferred) {
+        // 控えは置けたが、本体に入ったかは分からない。
+        // 変更の記録は残しておき、次の保存でもう一度書く（控えは書けてから捨てられる）
+        this._restoreDirty(planned.dirty);
+      } else {
+        this._savedStamp = planned.stamps;
+      }
       return true;
     } catch (err) {
       console.error('[fcc] 保存に失敗しました', err);
+      this._restoreDirty(planned.dirty);
       this.lastSaveError = err;
       return false;
     }
@@ -343,6 +420,60 @@ export class Store {
     if (this.readOnly) return { ok: false, readOnly: true };
     if (this._pendingSave || this._saveTimer) return this.persist();
     return this._saving || { ok: true };
+  }
+
+  /* ------------------------------------------------------ 差分の書き出し */
+
+  /**
+   * この出来事で何が変わったかを記録する。
+   *
+   * メモの id が分かる出来事はそのメモだけ、設定やミッションだけの出来事は
+   * 「メモ以外」だけを書けばよい。どちらとも言えない出来事は全部書き直す
+   * （書き忘れるより、多めに書く方が安全）。
+   */
+  _markDirty(event) {
+    const type = event?.type || '';
+    if (event?.noteId) {
+      this._dirty.notes.add(event.noteId);
+      // 消したときは、保存先からも消してもらう
+      if (type === 'note:delete') this._dirty.removed.add(event.noteId);
+      // 活動記録やミッションも一緒に動くので、メモ以外もまとめて書く
+      this._dirty.rest = true;
+      return;
+    }
+    if (REST_ONLY_EVENTS.has(type)) { this._dirty.rest = true; return; }
+    this._dirty.all = true;
+  }
+
+  /**
+   * 次に書く内容を決めて、記録をいったん空にする。
+   * 書き込みが失敗したら _restoreDirty で戻す。
+   */
+  _takeSavePlan() {
+    const dirty = this._dirty;
+    this._dirty = freshDirty();
+    const { notes, rest } = splitData(this.data);
+    const stamps = stampsOf(notes);
+    if (dirty.all || !this._savedStamp) {
+      return { plan: { full: true, notes, removed: [], rest }, stamps, dirty };
+    }
+    const removed = [];
+    const alive = new Set(notes.map((n) => n.id));
+    this._savedStamp.forEach((_stamp, id) => { if (!alive.has(id)) removed.push(id); });
+    dirty.removed.forEach((id) => { if (!alive.has(id) && !removed.includes(id)) removed.push(id); });
+    // 印が変わったメモ（＝中身が動いたメモ）と、出来事から分かったメモを書く
+    const changed = notes.filter((n) => dirty.notes.has(n.id)
+      || this._savedStamp.get(n.id) !== n.updatedAt);
+    return { plan: { full: false, notes: changed, removed, rest }, stamps, dirty };
+  }
+
+  /** 書けなかったぶんを、変更の記録に戻す */
+  _restoreDirty(dirty) {
+    if (!dirty) return;
+    dirty.notes.forEach((id) => this._dirty.notes.add(id));
+    dirty.removed.forEach((id) => this._dirty.removed.add(id));
+    if (dirty.rest) this._dirty.rest = true;
+    if (dirty.all) this._dirty.all = true;
   }
 
   /* ---------------------------------------------------------- pub / sub */
@@ -365,6 +496,7 @@ export class Store {
    */
   commit(event = { type: 'change' }, { schedule = true } = {}) {
     this.invalidate({ schedule });
+    this._markDirty(event);
     this.emit(event);
     if (this.readOnly) return;
     // 確定の操作は待たせずに書き始める。本文の入力だけ少しまとめる。
@@ -845,6 +977,8 @@ export class Store {
   /** すべてのメモのスケジュールを再生し直す（設定変更時など） */
   refreshAll() {
     this.data.notes.forEach((n) => this.refresh(n));
+    // 予定は全メモで組み直したので、保存も全メモぶん必要になる
+    this._dirty.all = true;
     this._index = null;
   }
 
@@ -1308,6 +1442,7 @@ export class Store {
       return { imported: added.length, skipped: incoming.notes.length - added.length };
     }
     this.data = incoming;
+    this._dirty.all = true;
     this.invalidate();
     this.commit({ type: 'data:import', mode, count: incoming.notes.length });
     return { imported: incoming.notes.length, skipped: 0 };
@@ -1317,6 +1452,9 @@ export class Store {
     const settings = { ...this.data.settings };
     this.data = createEmptyData();
     this.data.settings = settings;
+    this._savedStamp = null;
+    this._dirty = freshDirty();
+    this._dirty.all = true;
     await this.adapter.clear();
     this.commit({ type: 'data:clear' });
   }
