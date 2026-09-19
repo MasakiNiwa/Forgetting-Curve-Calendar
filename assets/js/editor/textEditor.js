@@ -100,9 +100,10 @@ export class TextEditor {
    */
   lineRange(start = this.selection.start, end = this.selection.end) {
     const text = this.el.value;
-    const from = text.lastIndexOf('\n', start - 1) + 1;
+    // start が 0 のときは lastIndexOf('\n', -1) が末尾から探してしまうので、先頭に固定する
+    const from = start <= 0 ? 0 : text.lastIndexOf('\n', start - 1) + 1;
     const scanFrom = end > start && end > from && text[end - 1] === '\n' ? end - 1 : end;
-    let to = text.indexOf('\n', scanFrom);
+    let to = text.indexOf('\n', Math.max(scanFrom, from));
     if (to === -1) to = text.length;
     return { from, to };
   }

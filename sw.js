@@ -7,7 +7,7 @@
  * - バージョンを変えると古いキャッシュを破棄する。
  * - メモのデータはキャッシュではなく localStorage にあるため、ここでは扱わない。
  */
-const VERSION = 'v0.7.1';
+const VERSION = 'v0.8.0';
 const PREFIX = 'fcc-';
 const CACHE = `${PREFIX}${VERSION}`;
 
@@ -32,6 +32,7 @@ const PRECACHE = [
   './assets/js/core/models.js',
   './assets/js/core/omikuji.js',
   './assets/js/core/storage.js',
+  './assets/js/core/tabLock.js',
   './assets/js/core/store.js',
   './assets/js/ui/app.js',
   './assets/js/ui/backup.js',
@@ -45,6 +46,7 @@ const PRECACHE = [
   './assets/js/ui/overlays.js',
   './assets/js/ui/reviewSession.js',
   './assets/js/ui/router.js',
+  './assets/js/ui/tabOwnership.js',
   './assets/js/ui/theme.js',
   './assets/js/ui/viewport.js',
   './assets/js/ui/views/calendar.js',

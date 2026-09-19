@@ -24,6 +24,8 @@ jobs:
           node-version: '22'
       - name: コアロジックのテスト
         run: npm test
+      - name: 複数のタイムゾーンで確認
+        run: npm run test:tz
 
   deploy:
     needs: test

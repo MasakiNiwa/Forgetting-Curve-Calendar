@@ -29,12 +29,25 @@ const state = { query: '', filter: 'all', tag: null, sort: 'updated' };
 /** 直前に編集していたメモ。一覧へ戻ったとき、どれを見ていたか分かるようにする。 */
 let focusId = null;
 
+/**
+ * 画面を作り直すたびに増えないよう、見張り役は 1 画面ぶんだけ持つ。
+ * （描画のたびに IntersectionObserver が残ると、古い画面を抱え込んでしまう）
+ */
+let liveObservers = [];
+
+function disposeObservers() {
+  liveObservers.forEach((io) => io.disconnect());
+  liveObservers = [];
+}
+
 /** 編集画面から一覧へ戻るときに呼ぶ */
 export function focusNote(id) {
   focusId = id || null;
 }
 
 export function renderNotes(store) {
+  // 前に作った画面の見張り役は、ここで必ず解除する
+  disposeObservers();
   const root = h('div', { class: 'page page--narrow' });
   const visible = selectNotes(store);
 
@@ -131,6 +144,7 @@ export function renderNotes(store) {
       sticky.dataset.stuck = entry.isIntersecting ? '' : 'true';
     }, { threshold: 1 });
     io.observe(sentinel);
+    liveObservers.push(io);
   }
 
   const list = h('div', { class: 'notes-list' });
@@ -196,6 +210,7 @@ export function renderNotes(store) {
           if (entries.some((e) => e.isIntersecting)) appendChunk();
         }, { rootMargin: '400px' });
         moreObserver.observe(more);
+        liveObservers.push(moreObserver);
       }
     }
 

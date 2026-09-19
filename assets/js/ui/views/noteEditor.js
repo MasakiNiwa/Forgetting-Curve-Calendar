@@ -57,6 +57,8 @@ function historyFor(key) {
 let active = null;
 
 const SAVE_DEBOUNCE = 700;
+/** 書きかけの控えを残す間隔（本体の保存より早く、入力ごとよりは少なく） */
+const DRAFT_DEBOUNCE = 350;
 
 export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo = 'notes' }) {
   if (active) active.dispose();
@@ -87,7 +89,9 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   // 未保存の書きかけがあれば、それを優先して開く。
   // 既存メモを空にした書きかけも「編集の結果」なので拾う（中身が空でも捨てない）。
-  const draftDiffers = Boolean(draft) && String(draft.value?.body ?? '') !== state.body;
+  // 本文だけでなく、タイトル・手掛かり・タグの違いも見る。
+  const draftDiffers = Boolean(draft) && ['body', 'title', 'cue', 'tags']
+    .some((k) => String(draft.value?.[k] ?? '') !== String(state[k] ?? ''));
   const usableDraft = draft && (!isEmptyDraft(draft.value) || (state.id && draftDiffers));
   const restored = Boolean(usableDraft) && draftDiffers;
   if (usableDraft) Object.assign(state, draft.value);
@@ -107,6 +111,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   let mirror = null;
   /** ステータスバーの更新待ち */
   let statsTimer = null;
+  /** 書きかけの控えの書き出し待ち */
+  let draftTimer = null;
 
   /* ---------------------------------------------------------- 画面 */
 
@@ -255,6 +261,17 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   updateDocumentTitle();
   setStatus(existing ? '保存済み' : '新しいメモ');
 
+  // 書きかけを復元したときは、本体にはまだ入っていない。未保存として保存を始める
+  if (restored) setTimeout(() => markDirty(), 0);
+
+  // 見るだけのタブでは、書けないことがすぐ分かるようにする
+  if (store.readOnly) {
+    textarea.readOnly = true;
+    titleInput.readOnly = true;
+    cueInput.readOnly = true;
+    setStatus('別のタブで編集中（このタブは見るだけ）', 'warn');
+  }
+
   /* ------------------------------------------------- 1 枚の紙として扱う */
 
   /**
@@ -329,6 +346,25 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     revision += 1;
     updateDocumentTitle();
     setStatus('未保存');
+    scheduleDraft();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { save(); }, SAVE_DEBOUNCE);
+  }
+
+  /**
+   * 書きかけの控えを残す。
+   * 1 文字ごとに本文全体を書き出すと長文で重くなるので、少しまとめる。
+   * 本体への保存より早めにして、閉じたときの取りこぼしを防ぐ。
+   */
+  function scheduleDraft() {
+    if (draftTimer) return;
+    draftTimer = setTimeout(() => { draftTimer = null; writeDraft(); }, DRAFT_DEBOUNCE);
+  }
+
+  function writeDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    if (!dirty) return;
     if (state.id || !isEmptyDraft(state)) {
       // 既存メモは空にした状態も下書きに残す（古い本文が復活しないように）
       const ok = saveDraft(key, state);
@@ -336,8 +372,6 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     } else {
       clearDraft(key);
     }
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { save(); }, SAVE_DEBOUNCE);
   }
 
   /**
@@ -841,7 +875,9 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   const onBeforeUnload = (event) => {
     if (!dirty) return;
-    save();
+    // 閉じる直前は、待たずにその場で残す
+    writeDraft();
+    store.flushSync() || save();
     event.preventDefault();
     event.returnValue = '';
   };
@@ -850,6 +886,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   active = {
     dispose() {
       disposed = true;
+      // 画面を離れるときは、控えを必ず残してから片づける
+      writeDraft();
       clearTimeout(saveTimer);
       clearTimeout(statsTimer);
       document.removeEventListener('keydown', onKeyDown);
@@ -1080,6 +1118,14 @@ export function readDisplaySettings() {
   }
 }
 
+/**
+ * 変えた項目だけを書き換える。
+ * パネルを開いた時点の値をまとめて書き戻すと、先に変えた設定が元に戻ってしまう。
+ */
+function patchDisplaySettings(patch) {
+  writeDisplaySettings({ ...readDisplaySettings(), ...patch });
+}
+
 function writeDisplaySettings(value) {
   try {
     window.localStorage.setItem(DISPLAY_KEY, JSON.stringify(value));
@@ -1113,7 +1159,7 @@ function openDisplaySettings(store) {
           type: 'button',
           class: 'chip',
           'aria-pressed': String(d.fontSize === size),
-          onClick: () => { writeDisplaySettings({ ...d, fontSize: size }); applyDisplaySettings(store, textarea); render(); },
+          onClick: () => { patchDisplaySettings({ fontSize: size }); applyDisplaySettings(store, textarea); render(); },
         }, `${size}px`))),
       h('div', { class: 'field__label', style: { marginTop: '14px' } }, '行の間隔'),
       h('div', { class: 'filter-row' },
@@ -1122,7 +1168,7 @@ function openDisplaySettings(store) {
             type: 'button',
             class: 'chip',
             'aria-pressed': String(d.lineHeight === v),
-            onClick: () => { writeDisplaySettings({ ...d, lineHeight: v }); applyDisplaySettings(store, textarea); render(); },
+            onClick: () => { patchDisplaySettings({ lineHeight: v }); applyDisplaySettings(store, textarea); render(); },
           }, label))),
       h('div', { class: 'divider' }),
       h('label', { class: 'switch' },
@@ -1133,7 +1179,7 @@ function openDisplaySettings(store) {
           h('input', {
             type: 'checkbox',
             checked: d.wrap,
-            onChange: (e) => { writeDisplaySettings({ ...d, wrap: e.target.checked }); applyDisplaySettings(store, textarea); },
+            onChange: (e) => { patchDisplaySettings({ wrap: e.target.checked }); applyDisplaySettings(store, textarea); },
           }),
           h('span', { class: 'switch__track' }),
           h('span', { class: 'switch__thumb' }))),
@@ -1145,7 +1191,7 @@ function openDisplaySettings(store) {
           h('input', {
             type: 'checkbox',
             checked: d.mono,
-            onChange: (e) => { writeDisplaySettings({ ...d, mono: e.target.checked }); applyDisplaySettings(store, textarea); },
+            onChange: (e) => { patchDisplaySettings({ mono: e.target.checked }); applyDisplaySettings(store, textarea); },
           }),
           h('span', { class: 'switch__track' }),
           h('span', { class: 'switch__thumb' }))),
@@ -1157,7 +1203,7 @@ function openDisplaySettings(store) {
           h('input', {
             type: 'checkbox',
             checked: d.bare,
-            onChange: (e) => { writeDisplaySettings({ ...d, bare: e.target.checked }); applyDisplaySettings(store, textarea); },
+            onChange: (e) => { patchDisplaySettings({ bare: e.target.checked }); applyDisplaySettings(store, textarea); },
           }),
           h('span', { class: 'switch__track' }),
           h('span', { class: 'switch__thumb' }))),

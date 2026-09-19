@@ -28,6 +28,18 @@ import { createDefaultAdapter } from './storage.js';
 const SAVE_COALESCE_MS = 400;
 
 /**
+ * すぐ保存する出来事。
+ * 入力は少しまとめてよいが、「記録した」「消した」「復元した」は
+ * その場で確定させる（直後にタブを閉じても残るように）。
+ */
+const IMMEDIATE_EVENTS = new Set([
+  'event:rate', 'event:skip', 'event:postpone', 'event:restart', 'event:reschedule',
+  'note:add', 'note:delete', 'note:restore', 'note:archive',
+  'data:import', 'data:clear', 'backup:saved',
+  'missions:omikuji', 'missions:update', 'settings:update',
+]);
+
+/**
  * 同じメモの 2 つの版を統合する。
  * 出来事は和集合、中身は新しい方。食い違った古い中身は conflicts に退避する。
  */
@@ -103,6 +115,25 @@ export class Store {
     /** 変更のたびに進む番号。同じ内容の数え直しを避けるために使う。 */
     this._revision = 0;
     this._contextCache = null;
+    /**
+     * 「見るだけ」のタブか。
+     * 同じデータを 2 つのタブが書くと取り返しがつかないので、書けるのは 1 つだけにする。
+     */
+    this.readOnly = false;
+  }
+
+  /** 覚えておいた集計を捨てる（読み込み・統合・変更のたびに必ず通す） */
+  invalidate({ schedule = true } = {}) {
+    if (schedule) this._index = null;
+    this._children = null;
+    this._contextCache = null;
+    this._revision += 1;
+  }
+
+  /** このタブで書いてよいかを切り替える */
+  setReadOnly(value) {
+    this.readOnly = Boolean(value);
+    this.emit({ type: 'tab:mode', readOnly: this.readOnly });
   }
 
   /* ---------------------------------------------------------- lifecycle */
@@ -111,7 +142,17 @@ export class Store {
     const raw = await this.adapter.load();
     this.data = raw ? normalizeData(migrate(raw)) : createEmptyData();
     this.syncedToken = raw?.meta?.saveToken ?? null;
-    this._index = null;
+    this.invalidate();
+    return this.data;
+  }
+
+  /**
+   * 保存先の内容で丸ごと読み直す（編集できるタブを移したときなど）。
+   * 統合はしない。「いま保存されているもの」が正しいとして扱う。
+   */
+  async reload() {
+    await this.load();
+    this.emit({ type: 'data:reloaded' });
     return this.data;
   }
 
@@ -176,8 +217,9 @@ export class Store {
     if (changed) {
       this.data.notes = nextNotes;
       this.data.notes.forEach((n) => this.refresh(n));
-      this._index = null;
     }
+    // 覚えておいた集計は、取り込みのあと必ず捨てる（古い数字を見せない）
+    this.invalidate();
     this.syncedToken = token;
     if (changed) this.emit({ type: 'data:reconciled', added, updated, conflicts });
     return { changed, added, updated, conflicts };
@@ -205,6 +247,9 @@ export class Store {
     this._pendingSave = false;
     clearTimeout(this._saveTimer);
     this._saveTimer = null;
+
+    // 見るだけのタブは、ぜったいに書かない（別のタブの変更を消さないため）
+    if (this.readOnly) return { ok: false, readOnly: true };
 
     const run = async () => {
       try {
@@ -257,6 +302,7 @@ export class Store {
    * 1 文字ごとに全部を書き出すと重いので、少しまとめてから 1 回で書く。
    */
   schedulePersist(delay = SAVE_COALESCE_MS) {
+    if (this.readOnly) return;
     this._pendingSave = true;
     if (this._saveTimer) return;
     this._saveTimer = setTimeout(() => {
@@ -265,8 +311,36 @@ export class Store {
     }, delay);
   }
 
+  /**
+   * 待っていられない場面（タブを閉じる直前）のための同期保存。
+   * 書けるタブは 1 つだけなので、別タブの確認はしない。
+   * @returns {boolean} 書けたか
+   */
+  flushSync() {
+    if (this.readOnly) return false;
+    if (!this._pendingSave && !this._saveTimer) return false;
+    if (typeof this.adapter.saveSync !== 'function') { this.flush(); return false; }
+    clearTimeout(this._saveTimer);
+    this._saveTimer = null;
+    this._pendingSave = false;
+    try {
+      const token = makeSaveToken();
+      this.data.meta.updatedAt = new Date().toISOString();
+      this.data.meta.appVersion = APP_VERSION;
+      this.data.meta.saveToken = token;
+      this.adapter.saveSync(this.data);
+      this.syncedToken = token;
+      return true;
+    } catch (err) {
+      console.error('[fcc] 保存に失敗しました', err);
+      this.lastSaveError = err;
+      return false;
+    }
+  }
+
   /** 予約ぶんも含めて必ず書き出し、結果を待つ */
   async flush() {
+    if (this.readOnly) return { ok: false, readOnly: true };
     if (this._pendingSave || this._saveTimer) return this.persist();
     return this._saving || { ok: true };
   }
@@ -290,11 +364,13 @@ export class Store {
    *   （本文だけの編集など）。日付ごとの索引を作り直さずに済む。
    */
   commit(event = { type: 'change' }, { schedule = true } = {}) {
-    if (schedule) this._index = null;
-    this._children = null;
-    this._revision += 1;
+    this.invalidate({ schedule });
     this.emit(event);
-    this.schedulePersist();
+    if (this.readOnly) return;
+    // 確定の操作は待たせずに書き始める。本文の入力だけ少しまとめる。
+    // （閉じる直前の取りこぼしは flushSync で守る）
+    if (IMMEDIATE_EVENTS.has(event?.type)) this.persist();
+    else this.schedulePersist();
   }
 
   /* ---------------------------------------------------------- accessors */
@@ -720,7 +796,11 @@ export class Store {
 
   deleteNote(id, { withChildren = true } = {}) {
     const removed = [];
+    const seen = new Set();
     const collect = (noteId) => {
+      // 万一たどり直しになっても止まらなくならないようにする（壊れたデータ対策）
+      if (seen.has(noteId)) return;
+      seen.add(noteId);
       removed.push(noteId);
       if (withChildren) this.childrenOf(noteId).forEach((c) => collect(c.id));
     };
@@ -1228,6 +1308,7 @@ export class Store {
       return { imported: added.length, skipped: incoming.notes.length - added.length };
     }
     this.data = incoming;
+    this.invalidate();
     this.commit({ type: 'data:import', mode, count: incoming.notes.length });
     return { imported: incoming.notes.length, skipped: 0 };
   }
