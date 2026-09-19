@@ -1,4 +1,5 @@
 /** メモの詳細表示・操作メニューと、編集画面への入口 */
+import { bodyView } from './markdownView.js';
 import { h, button, iconButton, clear } from './dom.js';
 import { icon } from './icons.js';
 import { openDialog, openSheet, openMenu, confirmDialog, closeAllOverlays, toast } from './overlays.js';
@@ -128,13 +129,8 @@ export function openNoteDetail(store, noteId) {
         h('span', { class: 'detail-cue__label' }, '手掛かり'),
         h('span', {}, recallCue(note))) : null,
 
-      note.body ? h('p', {
-        style: {
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '14px',
-          background: 'var(--fcc-surface-container)', padding: '14px',
-          borderRadius: 'var(--fcc-radius-m)', fontSize: '.9rem',
-        },
-      }, note.body) : null,
+      note.body ? h('div', { class: 'detail-body' },
+        bodyView(note.body, store.settings, { className: 'detail-body__text' })) : null,
 
       h('div', { class: 'note-card__actions', style: { marginTop: '14px' } },
         button('編集', {

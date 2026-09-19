@@ -27,6 +27,12 @@ import {
   pointsForLevel,
 } from '../assets/js/core/missions.js';
 import { serializeNotes, toCsv } from '../assets/js/core/exporter.js';
+import {
+  looksLikeMarkdown, markdownToPlain, parseInline, parseMarkdown, safeUrl,
+} from '../assets/js/core/markdown.js';
+import {
+  foldText, matchNote, parseQuery, searchNotes, snippet,
+} from '../assets/js/core/search.js';
 import { MemoryAdapter } from '../assets/js/core/storage.js';
 import { Store } from '../assets/js/core/store.js';
 
@@ -616,6 +622,170 @@ test('store: 保存の成否が呼び出し側へ返る', async () => {
   assert.equal(result.ok, false, '失敗が返る');
   assert.ok(store.lastSaveError);
   assert.equal(store.notes.length, 1, '画面上のメモは保持される');
+});
+
+/* --------------------------------------------------- v0.10: Markdown */
+
+const kindsOf = (blocks) => blocks.map((b) => b.type);
+const textOf = (nodes) => nodes.map((n) => (n.text !== undefined ? n.text : textOf(n.children || []))).join('');
+
+test('markdown: 見出し・段落・区切り線を読み分ける', () => {
+  const blocks = parseMarkdown('# 見出し\n\n本文です。\n続きの行。\n\n---\n\n## 小見出し');
+  assert.deepEqual(kindsOf(blocks), ['heading', 'paragraph', 'rule', 'heading']);
+  assert.equal(blocks[0].level, 1);
+  assert.equal(textOf(blocks[0].inline), '見出し');
+  // 1 行の改行は、そのまま改行として残す（メモ帳の感覚に合わせる）
+  assert.equal(blocks[1].lines.length, 2);
+  assert.equal(blocks[3].level, 2);
+});
+
+test('markdown: 箇条書きは入れ子とチェックボックスを扱う', () => {
+  const blocks = parseMarkdown('- 親\n  - 子\n- [ ] やること\n- [x] 終わったこと');
+  assert.equal(blocks.length, 1);
+  const list = blocks[0];
+  assert.equal(list.ordered, false);
+  assert.equal(list.items.length, 3);
+  assert.equal(list.items[0].children.length, 1, '子の並びがぶら下がる');
+  assert.equal(textOf(list.items[0].children[0].items[0].inline), '子');
+  assert.equal(list.items[1].checked, false);
+  assert.equal(list.items[2].checked, true);
+  assert.equal(textOf(list.items[2].inline), '終わったこと');
+});
+
+test('markdown: 番号つきの並びは別の並びとして扱う', () => {
+  const blocks = parseMarkdown('1. いち\n2. に\n\n- 別の並び');
+  assert.deepEqual(kindsOf(blocks), ['list', 'list']);
+  assert.equal(blocks[0].ordered, true);
+  assert.equal(blocks[1].ordered, false);
+});
+
+test('markdown: 引用・コード・表', () => {
+  const blocks = parseMarkdown('> 引用です\n> 続き\n\n```js\nconst a = 1;\n```\n\n| 語 | 意味 |\n| --- | ---: |\n| apple | りんご |');
+  assert.deepEqual(kindsOf(blocks), ['quote', 'code', 'table']);
+  assert.equal(kindsOf(blocks[0].blocks)[0], 'paragraph');
+  assert.equal(blocks[1].lang, 'js');
+  assert.equal(blocks[1].text, 'const a = 1;');
+  assert.equal(textOf(blocks[2].head[0]), '語');
+  assert.equal(blocks[2].align[1], 'right');
+  assert.equal(textOf(blocks[2].rows[0][1]), 'りんご');
+});
+
+test('markdown: 強調とリンクを読み分ける', () => {
+  const nodes = parseInline('**太字**と*斜体*と`コード`と~~消し~~と[リンク](https://example.com)');
+  assert.deepEqual(nodes.map((n) => n.type), ['strong', 'text', 'em', 'text', 'code', 'text', 'del', 'text', 'link']);
+  assert.equal(nodes[8].href, 'https://example.com');
+  assert.equal(textOf(nodes[8].children), 'リンク');
+});
+
+test('markdown: 危ないリンクは、ただの文字として出す', () => {
+  assert.equal(safeUrl('https://example.com'), 'https://example.com');
+  assert.equal(safeUrl('mailto:a@example.com'), 'mailto:a@example.com');
+  assert.equal(safeUrl('javascript:alert(1)'), null);
+  assert.equal(safeUrl('//example.com'), null);
+  const nodes = parseInline('[押さないで](javascript:alert(1))');
+  assert.deepEqual(nodes.map((n) => n.type), ['text']);
+  assert.equal(nodes[0].text, '[押さないで](javascript:alert(1))');
+});
+
+test('markdown: 素の URL はリンクにする', () => {
+  const nodes = parseInline('参考 https://example.com/page です');
+  assert.equal(nodes[1].type, 'link');
+  assert.equal(nodes[1].href, 'https://example.com/page');
+});
+
+test('markdown: 記号を外した文にできる（一覧の抜粋用）', () => {
+  const plain = markdownToPlain('# 見出し\n- [ ] やること\n**太字**と`コード`と[リンク](https://example.com)');
+  assert.equal(plain.includes('#'), false);
+  assert.equal(plain.includes('**'), false);
+  assert.equal(plain.includes('見出し'), true);
+  assert.equal(plain.includes('やること'), true);
+  assert.equal(plain.includes('リンク'), true);
+  assert.equal(plain.includes('https://example.com'), false);
+});
+
+test('markdown: Markdown らしさの見分け', () => {
+  assert.equal(looksLikeMarkdown('# 見出し'), true);
+  assert.equal(looksLikeMarkdown('- 箇条書き'), true);
+  assert.equal(looksLikeMarkdown('ふつうのメモです。\n改行もします。'), false);
+});
+
+test('markdown: タイトルは記号を外して見せる', () => {
+  const note = createNote({ body: '# 減価償却の方法\n定額法・定率法・生産高比例法' }, settings);
+  assert.equal(displayTitle(note), '減価償却の方法');
+});
+
+/* ------------------------------------------------------ v0.10: 探しもの */
+
+const noteFor = (body, extra = {}) => createNote({ body, ...extra }, settings);
+
+test('search: 全角・半角・大小・カタカナのちがいを越えて探せる', () => {
+  assert.equal(foldText('ＡＢＣ'), 'abc');
+  assert.equal(foldText('ソウキャク'), 'そうきゃく');
+  assert.equal(foldText('ﾊﾝｶｸ'), 'はんかく');
+
+  const note = noteFor('想起（ソウキャク）は ＡＢＣ 順に並べる');
+  assert.equal(matchNote(note, parseQuery('そうきゃく')).hit, true);
+  assert.equal(matchNote(note, parseQuery('abc')).hit, true);
+  assert.equal(matchNote(note, parseQuery('ＡＢＣ')).hit, true);
+});
+
+test('search: 複数のことばは「どちらも含む」で絞る', () => {
+  const a = noteFor('簿記の減価償却は定額法と定率法');
+  const b = noteFor('簿記の仕訳のきほん');
+  const query = parseQuery('簿記 定率法');
+  assert.equal(matchNote(a, query).hit, true);
+  assert.equal(matchNote(b, query).hit, false);
+});
+
+test('search: -ことば で除き、"ひとつづき" はそのまま探す', () => {
+  const a = noteFor('英語 の 熟語 を覚える');
+  const b = noteFor('英語の熟語を覚える');
+  assert.equal(matchNote(a, parseQuery('英語 -熟語')).hit, false);
+  assert.equal(matchNote(a, parseQuery('"英語 の"')).hit, true);
+  assert.equal(matchNote(b, parseQuery('"英語 の"')).hit, false);
+});
+
+test('search: #タグ で絞り込める', () => {
+  const a = noteFor('決算整理', { tags: ['簿記'] });
+  const b = noteFor('決算整理', { tags: ['英語'] });
+  assert.equal(matchNote(a, parseQuery('#簿記')).hit, true);
+  assert.equal(matchNote(b, parseQuery('#簿記')).hit, false);
+  assert.equal(matchNote(b, parseQuery('-#簿記')).hit, true);
+  // タグとことばを混ぜられる
+  assert.equal(matchNote(a, parseQuery('#簿記 決算')).hit, true);
+  assert.equal(matchNote(a, parseQuery('#簿記 英作文')).hit, false);
+});
+
+test('search: 当たった場所を、元の本文の位置で返す', () => {
+  const note = noteFor('一行目\nここに ソウキャク がある');
+  const { hit, ranges } = matchNote(note, parseQuery('そうきゃく'));
+  assert.equal(hit, true);
+  assert.equal(ranges.length, 1);
+  assert.equal(note.body.slice(ranges[0][0], ranges[0][1]), 'ソウキャク');
+});
+
+test('search: 抜粋は、当たった行から見せる', () => {
+  const body = `${'前置き。'.repeat(20)}\n探している言葉はここにあります。\n${'あとがき。'.repeat(20)}`;
+  const note = noteFor(body);
+  const { ranges } = matchNote(note, parseQuery('探している言葉'));
+  const cut = snippet(note.body, ranges, { length: 40 });
+  assert.equal(cut.text.startsWith('探している言葉'), true, '当たった行の頭から出る');
+  assert.equal(cut.head, false, '前を省いたことが分かる');
+  assert.equal(cut.text.slice(cut.ranges[0][0], cut.ranges[0][1]), '探している言葉');
+});
+
+test('search: 空の条件では、すべてそのまま返す', () => {
+  const notes = [noteFor('あ'), noteFor('い')];
+  const query = parseQuery('   ');
+  assert.equal(query.empty, true);
+  assert.equal(searchNotes(notes, query).length, 2);
+});
+
+test('search: タイトルや手掛かりでも当たる', () => {
+  const note = createNote({ body: '本文はふつう', title: '減価償却のまとめ', cue: '3 つの方法は？' }, settings);
+  assert.equal(matchNote(note, parseQuery('減価償却'), { title: displayTitle(note) }).hit, true);
+  assert.equal(matchNote(note, parseQuery('3つの方法')).hit, false, '空白のちがいまでは埋めない');
+  assert.equal(matchNote(note, parseQuery('3 つの方法')).hit, true);
 });
 
 /* ------------------------------------------------- v0.4: 続けたくなる区切り */

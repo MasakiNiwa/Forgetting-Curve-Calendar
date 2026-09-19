@@ -5,6 +5,7 @@
  *   手掛かりを見る → 頭の中で思い出す → 内容を開く → 想起結果を記録 → 次へ
  * 最後に「また忘れる頃に会いましょう」で締めることで、1 日の区切りを作る。
  */
+import { bodyView } from './markdownView.js';
 import { h, append, button, iconButton, clear } from './dom.js';
 import { icon } from './icons.js';
 import { openDialog, toast } from './overlays.js';
@@ -89,7 +90,9 @@ export function startReviewSession(store, options = {}) {
       append(clear(answer), [
         // 明示的なタイトルがあるときだけ見出しを添える（本文と重複させない）
         note.cue && note.title ? h('div', { class: 'session__answer-label' }, note.title) : null,
-        h('p', { class: 'session__body' }, text || '（本文はありません）'),
+        text
+          ? bodyView(text, store.settings, { className: 'session__body' })
+          : h('p', { class: 'session__body' }, '（本文はありません）'),
       ]);
       append(clear(actions), [
         h('p', { class: 'session__ask' }, '思い出せましたか？'),

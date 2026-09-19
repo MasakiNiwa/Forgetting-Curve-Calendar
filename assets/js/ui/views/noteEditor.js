@@ -10,6 +10,7 @@ import { icon } from '../icons.js';
 import { openSheet, openMenu, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
 import { branchTree, curvePreview, reviewTimeline, tagChips } from '../components.js';
+import { markdownView } from '../markdownView.js';
 import { navigate, replacePath } from '../router.js';
 import { focusNote } from './notes.js';
 import { TextEditor } from '../../editor/textEditor.js';
@@ -176,6 +177,13 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     h('div', { class: 'ed__head' }, titleInput, cueRow, cueHint),
     textarea);
   const doc = h('div', { class: 'ed__doc' }, docInner);
+  // 書いたものを「読む形」で確かめるところ（書くのは素の文字のまま）
+  const preview = h('div', {
+    class: 'ed__preview',
+    hidden: true,
+    tabindex: '-1',
+    onKeyDown: (e) => { if (e.key === 'Escape') { e.preventDefault(); togglePreview(false); } },
+  });
 
   const statusText = h('span', { class: 'ed__status-text' });
   const statusCount = h('button', {
@@ -186,6 +194,10 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   });
   const statusCaret = h('span', { class: 'ed__status-caret' });
 
+  const previewBtn = iconButton(icon('eye'), {
+    label: 'プレビュー',
+    onClick: () => togglePreview(),
+  });
   const undoBtn = iconButton(icon('undo'), { label: '元に戻す', onClick: () => editor.run('undo') });
   const redoBtn = iconButton(icon('redo'), { label: 'やり直す', onClick: () => editor.run('redo') });
 
@@ -198,6 +210,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       h('div', { class: 'ed__toolbar-gap' }),
       undoBtn,
       redoBtn,
+      previewBtn,
       iconButton(icon('list'), { label: '見出しへ移動', onClick: () => openOutline() }),
       iconButton(icon('search'), { label: 'メモ内を検索', onClick: () => toggleFind() }),
       iconButton(icon('text'), { label: '表示設定', onClick: () => openDisplaySettings(store) }),
@@ -225,6 +238,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       h('span', {}, `「${displayTitle(parent)}」への追加メモ`)) : null,
     findBar,
     doc,
+    preview,
     shortcutBar,
     h('footer', { class: 'ed__status' }, statusText, h('span', { style: { flex: '1' } }), statusCaret, statusCount));
 
@@ -471,6 +485,46 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         },
       }));
     editorEl.querySelector('.ed__doc').insertAdjacentElement('beforebegin', box);
+  }
+
+  /**
+   * プレビュー（読む形）の出し入れ。
+   *
+   * 書くのは素の文字のままで、確かめたいときだけ見た目を作る。
+   * 出しっぱなしにはしない（メモ帳としての手触りを変えないため）。
+   */
+  function togglePreview(next = preview.hidden) {
+    if (next) {
+      const title = (state.title || '').trim();
+      const cue = (state.cue || '').trim();
+      append(clear(preview), [
+        title ? h('h1', { class: 'ed__preview-title' }, title) : null,
+        cue ? h('div', { class: 'ed__preview-cue' },
+          h('span', { html: icon('target', { size: 15 }), style: { display: 'flex' } }),
+          h('span', {}, cue)) : null,
+        state.body.trim()
+          ? markdownView(state.body, { className: 'ed__preview-body' })
+          : h('p', { class: 'ed__preview-empty' }, 'まだ本文がありません。'),
+      ]);
+      preview.hidden = false;
+      doc.hidden = true;
+      shortcutBar.hidden = true;
+      previewBtn.setAttribute('aria-pressed', 'true');
+      previewBtn.setAttribute('aria-label', '編集に戻る');
+      preview.scrollTop = 0;
+      preview.focus({ preventScroll: true });
+      setStatus('プレビュー（読む形）。Esc で編集に戻ります');
+      return;
+    }
+    preview.hidden = true;
+    doc.hidden = false;
+    shortcutBar.hidden = false;
+    previewBtn.removeAttribute('aria-pressed');
+    previewBtn.setAttribute('aria-label', 'プレビュー');
+    clear(preview);
+    setStatus(dirty ? '未保存' : (state.id ? '保存済み' : '新しいメモ'));
+    textarea.focus();
+    refreshLayout();
   }
 
   /** タブのタイトルを、いま書いているメモに合わせる */
