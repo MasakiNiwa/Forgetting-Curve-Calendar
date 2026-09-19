@@ -22,6 +22,25 @@ const FENCE = /^\s{0,3}(```|~~~)(.*)$/;
 const TABLE_SPLIT = /^\s{0,3}\|?[\s:|-]*-[\s:|-]*\|?\s*$/;
 const CHECK = /^\[( |x|X)\]\s+(.*)$/;
 
+/**
+ * 表の 1 行をマスに分ける。
+ * マスの中の「|」は「\|」と書くので、そこでは区切らない（書いたとおりに戻せるように）。
+ */
+export function splitTableRow(row) {
+  const src = String(row ?? '').replace(/^\s*\|/, '');
+  const cells = [];
+  let cur = '';
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '\\' && src[i + 1] === '|') { cur += '|'; i += 1; continue; }
+    if (ch === '|') { cells.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  // 行の終わりの「|」は区切りではなく飾り
+  if (cur.trim() || cells.length === 0) cells.push(cur.trim());
+  return cells;
+}
+
 /** 安全に開けるリンクだけを通す */
 export function safeUrl(href) {
   const url = String(href || '').trim();
@@ -61,34 +80,42 @@ export function parseInline(text) {
   return mergeText(scanInline(text));
 }
 
+/**
+ * 前から順に見ていく（再帰にしない）。
+ * 装飾がとても多い長い行でも、積み上がって止まらないようにするため。
+ * 強調の中身だけは、そのつど読み直す（入れ子の深さは高が知れている）。
+ */
 function scanInline(text) {
-  const src = String(text ?? '');
-  if (!src) return [];
-  let best = null;
-  INLINE_RULES.forEach((rule) => {
-    const m = rule.re.exec(src);
-    if (!m) return;
-    if (!best || m.index < best.match.index) best = { rule, match: m };
-  });
-  if (!best) return [{ type: 'text', text: src }];
+  const out = [];
+  let rest = String(text ?? '');
+  while (rest) {
+    let best = null;
+    for (const rule of INLINE_RULES) {
+      const m = rule.re.exec(rest);
+      if (m && (!best || m.index < best.match.index)) best = { rule, match: m };
+    }
+    if (!best) { out.push({ type: 'text', text: rest }); break; }
 
-  const { rule, match } = best;
-  const before = src.slice(0, match.index);
-  const after = src.slice(match.index + match[0].length);
-  const head = before ? scanInline(before) : [];
-  const tail = after ? scanInline(after) : [];
+    const { rule, match } = best;
+    if (match.index) out.push({ type: 'text', text: rest.slice(0, match.index) });
 
-  if (rule.type === 'code') {
-    return [...head, { type: 'code', text: match[1] }, ...tail];
+    if (rule.type === 'code') {
+      out.push({ type: 'code', text: match[1] });
+    } else if (rule.type === 'link' || rule.type === 'autolink') {
+      const href = safeUrl(rule.type === 'link' ? match[2] : match[0]);
+      if (!href) {
+        // 開けないリンクは、書いたとおりの文字として残す
+        out.push({ type: 'text', text: match[0] });
+      } else {
+        const label = rule.type === 'link' ? (match[1] || href) : match[0];
+        out.push({ type: 'link', href, children: [{ type: 'text', text: label }] });
+      }
+    } else {
+      out.push({ type: rule.type, children: parseInline(match[1]) });
+    }
+    rest = rest.slice(match.index + match[0].length);
   }
-  if (rule.type === 'link' || rule.type === 'autolink') {
-    const href = safeUrl(rule.type === 'link' ? match[2] : match[0]);
-    // 開けないリンクは、書いたとおりの文字として残す
-    if (!href) return [...head, { type: 'text', text: match[0] }, ...tail];
-    const label = rule.type === 'link' ? (match[1] || href) : match[0];
-    return [...head, { type: 'link', href, children: [{ type: 'text', text: label }] }, ...tail];
-  }
-  return [...head, { type: rule.type, children: parseInline(match[1]) }, ...tail];
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -200,11 +227,12 @@ export function parseMarkdown(text) {
     if (line.includes('|') && i + 1 < lines.length && TABLE_SPLIT.test(lines[i + 1]) && lines[i + 1].includes('|')) {
       flush();
       const tableStart = i;
-      const cells = (row) => row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+      const cells = splitTableRow;
       const head = cells(line).map(parseInline);
       const align = cells(lines[i + 1]).map((c) => {
         if (/^:.*:$/.test(c)) return 'center';
         if (/:$/.test(c)) return 'right';
+        if (/^:/.test(c)) return 'left';
         return null;
       });
       i += 2;

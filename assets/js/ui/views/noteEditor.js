@@ -7,10 +7,10 @@
  */
 import { h, append, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
-import { openSheet, openMenu, confirmDialog, toast } from '../overlays.js';
+import { openSheet, openMenu, openDialog, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
 import { branchTree, curvePreview, reviewTimeline, tagChips } from '../components.js';
-import { createBlockEditor } from '../blockEditor.js';
+import { createRichEditor } from '../../editor/richText.js';
 import { navigate, replacePath } from '../router.js';
 import { focusNote } from './notes.js';
 import { TextEditor } from '../../editor/textEditor.js';
@@ -120,6 +120,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   let mode = 'rich';
   /** 見たまま側で本文を触ったか（ソースへ移るときに履歴を作り直すため） */
   let richTouched = false;
+  /** 編集面に読み込んである本文（同じなら読み直さない＝カーソルを飛ばさない） */
+  let richSynced = null;
   /** この編集画面を離れたか（離れたあとに URL を書き換えないため） */
   let disposed = false;
   let lastError = null;
@@ -147,6 +149,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     onInput: (e) => { state.title = e.target.value; markDirty(); },
     // Enter / ↓ で手掛かりへ、そのまま書き進められるようにする
     onKeyDown: (e) => {
+      // 日本語の変換を確定する Enter とぶつからないようにする
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); cueInput.focus(); }
     },
   });
@@ -160,9 +164,10 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     'aria-label': '思い出すための手掛かり',
     onInput: (e) => { state.cue = e.target.value; markDirty(); },
     onKeyDown: (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter' || e.key === 'ArrowDown') {
         e.preventDefault();
-        editor.focus({ start: 0, end: 0 });
+        focusBody();
       }
       if (e.key === 'ArrowUp') { e.preventDefault(); titleInput.focus(); }
     },
@@ -197,19 +202,24 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   const docInner = h('div', { class: 'ed__doc-inner' },
     h('div', { class: 'ed__head' }, titleInput, cueRow, cueHint),
     textarea);
-  // 見たままの編集（主画面）。素の文字で直す「ソース」は textarea 側
-  const blockEditor = createBlockEditor({
-    getText: () => state.body,
-    setText: (next) => {
+  /**
+   * 本文の編集面（ふだんはこちら）。
+   * 打ち込みはブラウザに任せ、変わったときだけ Markdown に戻して受け取る。
+   */
+  const richEditor = createRichEditor({
+    onChange: (next) => {
+      if (next === state.body) return;
       state.body = next;
       richTouched = true;
+      richSynced = next;
       // ソース側とも食い違わないようにしておく（文字数・見出し・検索が同じものを見る）
       textarea.value = next;
       markDirty();
       updateStats();
     },
+    onSelectionChange: () => updateRichButtons(),
   });
-  const rich = h('div', { class: 'ed__rich', hidden: true }, blockEditor.element);
+  const rich = h('div', { class: 'ed__rich', hidden: true }, richEditor.element);
   docInner.appendChild(rich);
   const doc = h('div', { class: 'ed__doc' }, docInner);
 
@@ -226,8 +236,14 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     label: 'ソースで編集',
     onClick: () => setMode(mode === 'rich' ? 'source' : 'rich'),
   });
-  const undoBtn = iconButton(icon('undo'), { label: '元に戻す', onClick: () => editor.run('undo') });
-  const redoBtn = iconButton(icon('redo'), { label: 'やり直す', onClick: () => editor.run('redo') });
+  const undoBtn = iconButton(icon('undo'), {
+    label: '元に戻す',
+    onClick: () => (mode === 'rich' ? richEditor.commands.undo() : editor.run('undo')),
+  });
+  const redoBtn = iconButton(icon('redo'), {
+    label: 'やり直す',
+    onClick: () => (mode === 'rich' ? richEditor.commands.redo() : editor.run('redo')),
+  });
 
   const findBar = h('div', { class: 'ed__find', hidden: true });
   const shortcutBar = h('div', { class: 'ed__shortcuts' });
@@ -526,34 +542,52 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   function setMode(next, { remember = true } = {}) {
     mode = next === 'source' ? 'source' : 'rich';
     if (mode === 'rich') {
-      // textarea 側で直した内容を、見たままへ写す
-      blockEditor.render();
+      // 中身が変わっていないときは読み直さない（カーソルを飛ばさないため）
+      if (richSynced !== state.body) { richEditor.load(state.body); richSynced = state.body; }
       rich.hidden = false;
       textarea.hidden = true;
-      shortcutBar.hidden = true;
-      undoBtn.hidden = true;
-      redoBtn.hidden = true;
       modeBtn.setAttribute('aria-label', 'ソースで編集');
       modeBtn.setAttribute('title', 'ソースで編集');
       modeBtn.innerHTML = icon('data');
-      setStatus(statusLabel());
     } else {
       rich.hidden = true;
       textarea.hidden = false;
-      shortcutBar.hidden = false;
-      undoBtn.hidden = false;
-      redoBtn.hidden = false;
       modeBtn.setAttribute('aria-label', '見たままで編集');
       modeBtn.setAttribute('title', '見たままで編集');
       modeBtn.innerHTML = icon('eye');
       // 見たままで触っていたら、そこまでを 1 つの区切りにして履歴を作り直す
       if (richTouched) { editor.load(state.body); richTouched = false; }
       refreshLayout();
-      setStatus(statusLabel());
     }
+    // 下のバーは、いまの編集面で使えるものに入れ替える
+    buildShortcuts();
+    shortcutBar.hidden = false;
+    updateHistoryButtons();
+    setStatus(statusLabel());
     if (remember && store.settings.editorMode !== mode) {
       store.updateSettings({ editorMode: mode });
     }
+  }
+
+  /** いま出ている編集面へカーソルを移す */
+  function focusBody() {
+    if (mode === 'rich') richEditor.focus();
+    else editor.focus({ start: 0, end: 0 });
+  }
+
+  /** 書式のボタンに、いまの状態を映す */
+  function updateRichButtons() {
+    if (mode !== 'rich') return;
+    const st = richEditor.state();
+    shortcutBar.querySelectorAll('[data-rich]').forEach((btn) => {
+      const key = btn.dataset.rich;
+      const on = (key === 'bold' && st.bold)
+        || (key === 'italic' && st.italic)
+        || (key === 'heading' && /^h[1-6]$/.test(st.block))
+        || (key === 'bullet' && st.inList)
+        || (key === 'quote' && st.block === 'blockquote');
+      btn.classList.toggle('ed__shortcut--on', Boolean(on));
+    });
   }
 
   function statusLabel() {
@@ -601,6 +635,12 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   }
 
   function updateHistoryButtons() {
+    if (mode === 'rich') {
+      // 見たままの編集は、ブラウザの「元に戻す」に載せている（いつでも押せる）
+      undoBtn.disabled = false;
+      redoBtn.disabled = false;
+      return;
+    }
     undoBtn.disabled = !editor.history.canUndo;
     redoBtn.disabled = !editor.history.canRedo;
   }
@@ -753,6 +793,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   /* ---------------------------------------------------------- ボタン類 */
 
   function buildShortcuts() {
+    if (mode === 'rich') { buildRichShortcuts(); return; }
     const items = [
       { id: 'heading', label: '見出し' },
       { id: 'bullet', label: 'リスト' },
@@ -787,6 +828,90 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     },
     h('span', { class: 'ed__shortcut-icon', html: icon('more', { size: 20 }) }),
     h('span', { class: 'ed__shortcut-label' }, 'その他')));
+  }
+
+  /** 見たままの編集で使う、下のバー */
+  function buildRichShortcuts() {
+    const items = [
+      { id: 'heading', label: '見出し', icon: 'heading', run: () => richEditor.commands.heading(2) },
+      { id: 'bold', label: '太字', icon: 'text', run: () => richEditor.commands.bold() },
+      { id: 'italic', label: '斜体', icon: 'edit', run: () => richEditor.commands.italic() },
+      { id: 'bullet', label: 'リスト', icon: 'list', run: () => richEditor.commands.bullet() },
+      { id: 'check', label: 'チェック', icon: 'checkbox', run: () => richEditor.commands.check() },
+      { id: 'quote', label: '引用', icon: 'note', run: () => richEditor.commands.quote() },
+      { id: 'table', label: '表', icon: 'layers', run: () => richEditor.commands.table() },
+    ];
+    clear(shortcutBar);
+    items.forEach(({ id, label, icon: name, run }) => {
+      shortcutBar.appendChild(h('button', {
+        type: 'button',
+        class: 'ed__shortcut',
+        'data-rich': id,
+        title: label,
+        'aria-label': label,
+        // 押してもキーボードが閉じない・カーソルが外れないようにする
+        onMouseDown: (e) => e.preventDefault(),
+        onClick: () => { run(); updateRichButtons(); },
+      },
+      h('span', { class: 'ed__shortcut-icon', html: icon(name, { size: 20 }) }),
+      h('span', { class: 'ed__shortcut-label' }, label)));
+    });
+    shortcutBar.appendChild(h('button', {
+      type: 'button',
+      class: 'ed__shortcut',
+      title: 'その他の編集',
+      'aria-label': 'その他の編集',
+      onMouseDown: (e) => e.preventDefault(),
+      onClick: () => openRichToolsMenu(),
+    },
+    h('span', { class: 'ed__shortcut-icon', html: icon('more', { size: 20 }) }),
+    h('span', { class: 'ed__shortcut-label' }, 'その他')));
+  }
+
+  function openRichToolsMenu() {
+    const st = richEditor.state();
+    const item = (label, description, name, run) => ({
+      label, description, icon: icon(name, { size: 20 }), onClick: () => { run(); updateRichButtons(); },
+    });
+    openMenu({
+      title: '編集',
+      items: [
+        item('大きな見出し', '章の区切りに', 'heading', () => richEditor.commands.heading(1)),
+        item('小さな見出し', '節の区切りに', 'heading', () => richEditor.commands.heading(3)),
+        item('番号つきリスト', '順番のあるものに', 'list', () => richEditor.commands.ordered()),
+        item('打ち消し線', '選んだところに', 'text', () => richEditor.commands.strike()),
+        item('コード（行の中）', '選んだところに', 'data', () => richEditor.commands.code()),
+        item('コードのかたまり', '複数行のコードに', 'data', () => richEditor.commands.codeBlock()),
+        item('区切り線', '話題を分ける', 'filter', () => richEditor.commands.rule()),
+        item('リンク', 'URL を貼る', 'external', () => askLink()),
+        ...(st.inTable ? [
+          { divider: true },
+          item('表：行を足す', '', 'plus', () => richEditor.commands.addRow()),
+          item('表：列を足す', '', 'plus', () => richEditor.commands.addColumn()),
+          item('表：行を削除', '', 'trash', () => richEditor.commands.removeRow()),
+          item('表：列を削除', '', 'trash', () => richEditor.commands.removeColumn()),
+        ] : []),
+      ],
+    });
+  }
+
+  /** リンクの URL を聞いてから貼る */
+  function askLink() {
+    const input = h('input', { class: 'input', type: 'url', placeholder: 'https://' });
+    openDialog({
+      title: 'リンクを貼る',
+      variant: 'alert',
+      content: h('div', {}, input, h('div', { class: 'field__hint' }, 'えらんだ文字がリンクになります。')),
+      actions: [
+        { label: 'キャンセル', onClick: (close) => close() },
+        {
+          label: '貼る',
+          className: 'btn btn--text',
+          onClick: (close) => { richEditor.commands.link(input.value); close(); },
+        },
+      ],
+    });
+    setTimeout(() => input.focus(), 40);
   }
 
   function openToolsMenu() {
