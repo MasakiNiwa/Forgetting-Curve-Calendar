@@ -574,8 +574,32 @@ button, input, textarea, select { font: inherit; color: inherit; }
   padding-bottom: env(safe-area-inset-bottom);
 }
 @keyframes sheet-up { from { transform: translateY(100%); } }
-.sheet__handle { width: 32px; height: 4px; border-radius: 2px; background: var(--fcc-outline-variant); margin: 12px auto 4px; flex: none; }
-.sheet__content { overflow-y: auto; padding: 4px 16px 16px; }
+/* つまみ：押しても、下へ払っても閉じられる */
+.sheet__handle {
+  display: block;
+  width: 56px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  margin: 6px auto 0;
+  flex: none;
+  cursor: grab;
+  touch-action: none;
+}
+.sheet__handle::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 9px auto;
+  border-radius: 2px;
+  background: var(--fcc-outline-variant);
+  transition: background var(--fcc-dur-short) var(--fcc-ease-standard);
+}
+.sheet__handle:hover::before, .sheet__handle:focus-visible::before { background: var(--fcc-outline); }
+.sheet__handle:active { cursor: grabbing; }
+.sheet__content { overflow-y: auto; padding: 4px 16px 16px; overscroll-behavior: contain; }
 
 .toast {
   position: fixed;
@@ -705,6 +729,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
     animation: pop-in var(--fcc-dur-medium) var(--fcc-ease-standard);
     max-height: 80dvh;
   }
+  /* PC では中央のダイアログなので、つまみは出さない（払う操作も使わない） */
   .sheet__handle { display: none; }
 }
 

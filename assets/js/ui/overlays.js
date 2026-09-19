@@ -131,7 +131,13 @@ export function openDialog(options) {
 export function openSheet({ title, content, onClose }) {
   const scrim = h('div', { class: 'scrim' });
   const sheet = h('section', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title || '' });
-  sheet.appendChild(h('div', { class: 'sheet__handle' }));
+  // つまみは「下へ払えば閉じられる」印。押しても閉じられるようにしておく
+  const handle = h('button', {
+    type: 'button',
+    class: 'sheet__handle',
+    'aria-label': '閉じる（下へ払っても閉じます）',
+  });
+  sheet.appendChild(handle);
   const body = h('div', { class: 'sheet__content' });
   append(body, [content]);
   sheet.appendChild(body);
@@ -139,7 +145,88 @@ export function openSheet({ title, content, onClose }) {
   layer().append(scrim, sheet);
   const close = pushOverlay([scrim, sheet], onClose);
   scrim.addEventListener('click', () => close());
+  handle.addEventListener('click', () => close());
+  enableSwipeToClose({ sheet, scrim, body, close });
   return { close, element: sheet, body };
+}
+
+/**
+ * 下へ払って閉じられるようにする。
+ *
+ * つまみが「動かせそう」に見えるのに動かないと気持ち悪いので、
+ * 見た目どおりに動くようにする。中身をスクロールしている途中では始めない。
+ */
+function enableSwipeToClose({ sheet, scrim, body, close }) {
+  let startY = 0;
+  let startedAt = 0;
+  let delta = 0;
+  let dragging = false;
+  let pointerId = null;
+
+  const height = () => sheet.getBoundingClientRect().height || 1;
+
+  const move = (dy) => {
+    delta = Math.max(0, dy);
+    sheet.style.transform = `translateY(${delta}px)`;
+    scrim.style.opacity = String(Math.max(0, 1 - (delta / height()) * 1.2));
+  };
+
+  const reset = ({ animate = true } = {}) => {
+    sheet.style.transition = animate ? 'transform var(--fcc-dur-medium) var(--fcc-ease-standard)' : '';
+    sheet.style.transform = '';
+    scrim.style.opacity = '';
+    setTimeout(() => { sheet.style.transition = ''; }, 240);
+  };
+
+  const finish = () => {
+    const elapsed = Date.now() - startedAt || 1;
+    const speed = delta / elapsed;        // px/ms
+    // しっかり引き下げたか、勢いよく払ったら閉じる
+    if (delta > height() * 0.25 || speed > 0.6) {
+      sheet.style.transition = 'transform var(--fcc-dur-short) var(--fcc-ease-standard)';
+      sheet.style.transform = `translateY(${height()}px)`;
+      scrim.style.opacity = '0';
+      setTimeout(() => close(), 140);
+      return;
+    }
+    reset();
+  };
+
+  sheet.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    // 中身を途中までスクロールしているときは、まずスクロールを優先する
+    const fromHandle = e.target.closest('.sheet__handle');
+    if (!fromHandle && body.scrollTop > 0) return;
+    // 入力中の操作を邪魔しない
+    if (!fromHandle && e.target.closest('input, textarea, select, button, a, [contenteditable]')) return;
+    dragging = true;
+    pointerId = e.pointerId;
+    startY = e.clientY;
+    startedAt = Date.now();
+    delta = 0;
+  });
+
+  sheet.addEventListener('pointermove', (e) => {
+    if (!dragging || e.pointerId !== pointerId) return;
+    const dy = e.clientY - startY;
+    if (dy <= 0) { move(0); return; }
+    // 下へ動かし始めたら、スクロールではなく「閉じる操作」として扱う
+    if (dy > 6 && !sheet.hasPointerCapture(pointerId)) sheet.setPointerCapture(pointerId);
+    move(dy);
+    if (delta > 0) e.preventDefault();
+  });
+
+  const end = (e) => {
+    if (!dragging || (e && e.pointerId !== pointerId)) return;
+    dragging = false;
+    if (pointerId !== null && sheet.hasPointerCapture(pointerId)) sheet.releasePointerCapture(pointerId);
+    pointerId = null;
+    if (delta > 0) finish();
+    else reset({ animate: false });
+  };
+
+  sheet.addEventListener('pointerup', end);
+  sheet.addEventListener('pointercancel', end);
 }
 
 /** 確認ダイアログ */
