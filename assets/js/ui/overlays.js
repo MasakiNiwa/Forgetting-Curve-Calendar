@@ -1,6 +1,7 @@
 /** トースト / ダイアログ / ボトムシートなどのオーバーレイ UI */
 import { h, clear, append, iconButton } from './dom.js';
 import { icon } from './icons.js';
+import { consumePop, popEntry, pushEntry } from './backstack.js';
 
 const layerId = 'overlay-layer';
 
@@ -44,21 +45,36 @@ export function toast(message, { actionLabel, onAction, duration = 3200 } = {}) 
 
 const openStack = [];
 
+/**
+ * 端末の「戻る」で、まずこの重なりを閉じる。
+ *
+ * 開くときに履歴を 1 つ積んでおき、戻るが押されたら（popstate）
+ * 画面を移らずに上の 1 枚だけ閉じる。
+ * 画面の中のボタンで閉じたときは、積んだ履歴も戻して帳尻を合わせる。
+ */
 function pushOverlay(nodes, onClose) {
-  const entry = { nodes, onClose };
+  const entry = { nodes, onClose, inHistory: pushEntry() };
   openStack.push(entry);
   document.body.style.overflow = 'hidden';
   return () => closeOverlay(entry);
 }
 
-function closeOverlay(entry) {
+function closeOverlay(entry, { fromHistory = false } = {}) {
   const idx = openStack.indexOf(entry);
   if (idx === -1) return;
   openStack.splice(idx, 1);
   entry.nodes.forEach((n) => n.remove());
   if (!openStack.length) document.body.style.overflow = '';
   entry.onClose?.();
+  // 「戻る」以外で閉じたときは、開くときに積んだ履歴を戻しておく
+  if (entry.inHistory && !fromHistory) popEntry();
 }
+
+window.addEventListener('popstate', () => {
+  if (consumePop()) return;
+  const top = openStack[openStack.length - 1];
+  if (top) closeOverlay(top, { fromHistory: true });
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && openStack.length) {
@@ -66,6 +82,11 @@ document.addEventListener('keydown', (e) => {
     closeOverlay(openStack[openStack.length - 1]);
   }
 });
+
+/** 重なりが開いているか（「戻る」の扱いを決めるために使う） */
+export function hasOpenOverlay() {
+  return openStack.length > 0;
+}
 
 /**
  * 汎用ダイアログ。

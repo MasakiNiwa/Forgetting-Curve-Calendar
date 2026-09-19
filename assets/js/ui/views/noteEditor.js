@@ -10,7 +10,7 @@ import { icon } from '../icons.js';
 import { openSheet, openMenu, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
 import { branchTree, curvePreview, reviewTimeline, tagChips } from '../components.js';
-import { markdownView } from '../markdownView.js';
+import { createBlockEditor } from '../blockEditor.js';
 import { navigate, replacePath } from '../router.js';
 import { focusNote } from './notes.js';
 import { TextEditor } from '../../editor/textEditor.js';
@@ -61,8 +61,25 @@ const SAVE_DEBOUNCE = 700;
 /** 書きかけの控えを残す間隔（本体の保存より早く、入力ごとよりは少なく） */
 const DRAFT_DEBOUNCE = 350;
 
+/**
+ * 直前に、この画面で作られたメモ。
+ *
+ * 新しいメモは、最初の保存ではじめて id が決まり、URL もそこで差し替わる。
+ * その前に積まれた履歴（シートを開いた時など）には古い URL が残るので、
+ * シートを閉じて戻ったときに「id の無い新規メモ」に見えてしまう。
+ * そうなったら、いま作ったメモへ連れ戻す。
+ */
+let lastCreated = null;
+
 export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo = 'notes' }) {
   if (active) active.dispose();
+
+  // 新規のつもりで開いたが、さっきここで作ったメモがあるならそれを開く
+  if ((!noteId || noteId === 'new') && lastCreated && store.getNote(lastCreated.id)
+    && lastCreated.parentId === (parentId || null)) {
+    noteId = lastCreated.id;
+    replacePath(['note', lastCreated.id], { from: returnTo });
+  }
 
   const existing = noteId && noteId !== 'new' ? store.getNote(noteId) : null;
   if (noteId && noteId !== 'new' && !existing) {
@@ -99,6 +116,10 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   let saveTimer = null;
   let dirty = false;
+  /** 'rich'（見たまま）か 'source'（素の文字）か */
+  let mode = 'rich';
+  /** 見たまま側で本文を触ったか（ソースへ移るときに履歴を作り直すため） */
+  let richTouched = false;
   /** この編集画面を離れたか（離れたあとに URL を書き換えないため） */
   let disposed = false;
   let lastError = null;
@@ -176,14 +197,21 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   const docInner = h('div', { class: 'ed__doc-inner' },
     h('div', { class: 'ed__head' }, titleInput, cueRow, cueHint),
     textarea);
-  const doc = h('div', { class: 'ed__doc' }, docInner);
-  // 書いたものを「読む形」で確かめるところ（書くのは素の文字のまま）
-  const preview = h('div', {
-    class: 'ed__preview',
-    hidden: true,
-    tabindex: '-1',
-    onKeyDown: (e) => { if (e.key === 'Escape') { e.preventDefault(); togglePreview(false); } },
+  // 見たままの編集（主画面）。素の文字で直す「ソース」は textarea 側
+  const blockEditor = createBlockEditor({
+    getText: () => state.body,
+    setText: (next) => {
+      state.body = next;
+      richTouched = true;
+      // ソース側とも食い違わないようにしておく（文字数・見出し・検索が同じものを見る）
+      textarea.value = next;
+      markDirty();
+      updateStats();
+    },
   });
+  const rich = h('div', { class: 'ed__rich', hidden: true }, blockEditor.element);
+  docInner.appendChild(rich);
+  const doc = h('div', { class: 'ed__doc' }, docInner);
 
   const statusText = h('span', { class: 'ed__status-text' });
   const statusCount = h('button', {
@@ -194,9 +222,9 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   });
   const statusCaret = h('span', { class: 'ed__status-caret' });
 
-  const previewBtn = iconButton(icon('eye'), {
-    label: 'プレビュー',
-    onClick: () => togglePreview(),
+  const modeBtn = iconButton(icon('data'), {
+    label: 'ソースで編集',
+    onClick: () => setMode(mode === 'rich' ? 'source' : 'rich'),
   });
   const undoBtn = iconButton(icon('undo'), { label: '元に戻す', onClick: () => editor.run('undo') });
   const redoBtn = iconButton(icon('redo'), { label: 'やり直す', onClick: () => editor.run('redo') });
@@ -210,7 +238,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       h('div', { class: 'ed__toolbar-gap' }),
       undoBtn,
       redoBtn,
-      previewBtn,
+      modeBtn,
       iconButton(icon('list'), { label: '見出しへ移動', onClick: () => openOutline() }),
       iconButton(icon('search'), { label: 'メモ内を検索', onClick: () => toggleFind() }),
       iconButton(icon('text'), { label: '表示設定', onClick: () => openDisplaySettings(store) }),
@@ -238,7 +266,6 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       h('span', {}, `「${displayTitle(parent)}」への追加メモ`)) : null,
     findBar,
     doc,
-    preview,
     shortcutBar,
     h('footer', { class: 'ed__status' }, statusText, h('span', { style: { flex: '1' } }), statusCaret, statusCount));
 
@@ -272,6 +299,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   updateStats({ immediate: true });
   updateHistoryButtons();
   autoGrow();
+  // 前に使っていた方（見たまま／ソース）で開く
+  setMode(store.settings.editorMode === 'source' ? 'source' : 'rich', { remember: false });
   updateDocumentTitle();
   setStatus(existing ? '保存済み' : '新しいメモ');
 
@@ -432,6 +461,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         seed: state.seed,
       });
       state.id = created.id;
+      lastCreated = { id: created.id, parentId: parentId || null };
       // 「新規」の履歴を、そのままこのメモの履歴として引き継ぐ
       histories.set(draftKey({ noteId: created.id }), editor.history);
       // すでに画面を離れていたら URL は触らない（戻った先から引き戻さない）
@@ -488,43 +518,47 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   }
 
   /**
-   * プレビュー（読む形）の出し入れ。
+   * 「見たまま」と「ソース」の切り替え。
    *
-   * 書くのは素の文字のままで、確かめたいときだけ見た目を作る。
-   * 出しっぱなしにはしない（メモ帳としての手触りを変えないため）。
+   * ふだんは見たままで書き、記法でしか書けないところだけソースで直す。
+   * どちらで書いても、本文は同じ素の Markdown のまま。
    */
-  function togglePreview(next = preview.hidden) {
-    if (next) {
-      const title = (state.title || '').trim();
-      const cue = (state.cue || '').trim();
-      append(clear(preview), [
-        title ? h('h1', { class: 'ed__preview-title' }, title) : null,
-        cue ? h('div', { class: 'ed__preview-cue' },
-          h('span', { html: icon('target', { size: 15 }), style: { display: 'flex' } }),
-          h('span', {}, cue)) : null,
-        state.body.trim()
-          ? markdownView(state.body, { className: 'ed__preview-body' })
-          : h('p', { class: 'ed__preview-empty' }, 'まだ本文がありません。'),
-      ]);
-      preview.hidden = false;
-      doc.hidden = true;
+  function setMode(next, { remember = true } = {}) {
+    mode = next === 'source' ? 'source' : 'rich';
+    if (mode === 'rich') {
+      // textarea 側で直した内容を、見たままへ写す
+      blockEditor.render();
+      rich.hidden = false;
+      textarea.hidden = true;
       shortcutBar.hidden = true;
-      previewBtn.setAttribute('aria-pressed', 'true');
-      previewBtn.setAttribute('aria-label', '編集に戻る');
-      preview.scrollTop = 0;
-      preview.focus({ preventScroll: true });
-      setStatus('プレビュー（読む形）。Esc で編集に戻ります');
-      return;
+      undoBtn.hidden = true;
+      redoBtn.hidden = true;
+      modeBtn.setAttribute('aria-label', 'ソースで編集');
+      modeBtn.setAttribute('title', 'ソースで編集');
+      modeBtn.innerHTML = icon('data');
+      setStatus(statusLabel());
+    } else {
+      rich.hidden = true;
+      textarea.hidden = false;
+      shortcutBar.hidden = false;
+      undoBtn.hidden = false;
+      redoBtn.hidden = false;
+      modeBtn.setAttribute('aria-label', '見たままで編集');
+      modeBtn.setAttribute('title', '見たままで編集');
+      modeBtn.innerHTML = icon('eye');
+      // 見たままで触っていたら、そこまでを 1 つの区切りにして履歴を作り直す
+      if (richTouched) { editor.load(state.body); richTouched = false; }
+      refreshLayout();
+      setStatus(statusLabel());
     }
-    preview.hidden = true;
-    doc.hidden = false;
-    shortcutBar.hidden = false;
-    previewBtn.removeAttribute('aria-pressed');
-    previewBtn.setAttribute('aria-label', 'プレビュー');
-    clear(preview);
-    setStatus(dirty ? '未保存' : (state.id ? '保存済み' : '新しいメモ'));
-    textarea.focus();
-    refreshLayout();
+    if (remember && store.settings.editorMode !== mode) {
+      store.updateSettings({ editorMode: mode });
+    }
+  }
+
+  function statusLabel() {
+    if (dirty) return '未保存';
+    return state.id ? '保存済み' : '新しいメモ';
   }
 
   /** タブのタイトルを、いま書いているメモに合わせる */
@@ -547,6 +581,14 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     if (statsTimer) return;
     const run = () => {
       statsTimer = null;
+      if (mode === 'rich') {
+        // 見たままのときは、カーソルの位置という考え方が無いので文字数だけ
+        const text = state.body;
+        const lines = text ? text.split('\n').length : 0;
+        statusCount.textContent = `${text.length} 字・${lines} 行`;
+        statusCaret.textContent = '';
+        return;
+      }
       const stats = editor.quickStats();
       statusCount.textContent = stats.selected
         ? `${stats.selected} 字を選択 / ${stats.chars} 字`
@@ -568,6 +610,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   let findState = { query: '', replacement: '', index: 0 };
 
   function toggleFind(force) {
+    // 検索や置換は、素の文字の上で動かす
+    if (mode === 'rich' && (force ?? findBar.hidden)) setMode('source');
     const show = force ?? findBar.hidden;
     findBar.hidden = !show;
     if (!show) return;
@@ -651,6 +695,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   }
 
   function openOutline() {
+    // 見出しへ移動したら、そのまま直せるようにソースへ
+    if (mode === 'rich') setMode('source');
     const items = outline();
     if (!items.length) {
       openMenu({
@@ -960,6 +1006,15 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       if (dirty) save();
       active = null;
     },
+    /**
+     * いま開いているのが、この行き先と同じメモか。
+     * 同じなら画面を作り直さない（作り直すと、書いている途中の状態が消える）。
+     */
+    matches(wantedId, wantedParent) {
+      const id = state.id || null;
+      const same = wantedId && wantedId !== 'new' ? wantedId === id : Boolean(id);
+      return same && (parentId || null) === (wantedParent || null);
+    },
     refreshLayout,
   };
 
@@ -986,8 +1041,15 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 }
 
 /** 画面から離れるときに呼ぶ（保存の取りこぼしを防ぐ） */
+/** その行き先のメモを、いま開いているか */
+export function isEditorShowing(noteId, parentId) {
+  return Boolean(active?.matches?.(noteId, parentId));
+}
+
 export function disposeNoteEditor() {
   if (active) active.dispose();
+  // 編集画面から出たら、「さっき作ったメモ」は忘れる（次の新規メモと混ざらないように）
+  lastCreated = null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1195,6 +1257,13 @@ function applyDisplaySettings(store, textarea) {
   textarea.style.fontFamily = d.mono ? 'var(--fcc-font-mono)' : 'var(--fcc-font)';
   const root = textarea.closest('.ed');
   if (root) root.dataset.bare = d.bare ? 'true' : '';
+  // 見たままの側も、同じ文字サイズ・行間で読めるようにする
+  const rich = root?.querySelector('.ed__rich');
+  if (rich) {
+    rich.style.fontSize = `${d.fontSize}px`;
+    rich.style.lineHeight = String(d.lineHeight);
+    rich.style.fontFamily = d.mono ? 'var(--fcc-font-mono)' : 'var(--fcc-font)';
+  }
   // 折り返しや文字サイズが変わると行数も変わるので、高さを組み直す
   active?.refreshLayout?.();
 }

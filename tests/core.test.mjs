@@ -33,6 +33,10 @@ import {
 import {
   foldText, matchNote, parseQuery, searchNotes, snippet,
 } from '../assets/js/core/search.js';
+import {
+  blocksOf, insertBlock, moveBlock, removeBlock, replaceBlock, tableOf, tableToMarkdown,
+  tableWithColumn, tableWithRow, tableWithoutColumn, tableWithoutRow, toggleCheck,
+} from '../assets/js/core/blocks.js';
 import { MemoryAdapter } from '../assets/js/core/storage.js';
 import { Store } from '../assets/js/core/store.js';
 
@@ -786,6 +790,103 @@ test('search: タイトルや手掛かりでも当たる', () => {
   assert.equal(matchNote(note, parseQuery('減価償却'), { title: displayTitle(note) }).hit, true);
   assert.equal(matchNote(note, parseQuery('3つの方法')).hit, false, '空白のちがいまでは埋めない');
   assert.equal(matchNote(note, parseQuery('3 つの方法')).hit, true);
+});
+
+/* ------------------------------------------- v0.11: 見たままの編集 */
+
+const DOC = [
+  '# 見出し',
+  '',
+  '本文の段落です。',
+  'つづきの行。',
+  '',
+  '- [ ] やること',
+  '- [x] 終わったこと',
+  '',
+  '| 語 | 意味 |',
+  '| --- | ---: |',
+  '| apple | りんご |',
+].join('\n');
+
+test('blocks: かたまりごとに、元の行と中身が取れる', () => {
+  const blocks = blocksOf(DOC);
+  assert.deepEqual(blocks.map((b) => b.type), ['heading', 'paragraph', 'list', 'table']);
+  assert.equal(blocks[0].source, '# 見出し');
+  assert.equal(blocks[1].source, '本文の段落です。\nつづきの行。');
+  assert.equal(blocks[3].source.split('\n').length, 3);
+});
+
+test('blocks: かたまりだけを書き換えられる', () => {
+  const blocks = blocksOf(DOC);
+  const next = replaceBlock(DOC, blocks[1], '書き換えた段落。');
+  assert.equal(next.includes('書き換えた段落。'), true);
+  assert.equal(next.includes('本文の段落です。'), false);
+  assert.equal(next.includes('# 見出し'), true, '他のかたまりはそのまま');
+  assert.equal(blocksOf(next).length, 4);
+});
+
+test('blocks: かたまりを消す・足す・動かす', () => {
+  const blocks = blocksOf(DOC);
+  const removed = removeBlock(DOC, blocks[0]);
+  assert.equal(removed.startsWith('本文の段落です。'), true);
+  assert.equal(blocksOf(removed).length, 3);
+
+  const added = insertBlock(DOC, blocks[0], '## 足した見出し');
+  const kinds = blocksOf(added).map((b) => b.type);
+  assert.deepEqual(kinds, ['heading', 'heading', 'paragraph', 'list', 'table']);
+  assert.equal(blocksOf(added)[1].source, '## 足した見出し');
+
+  const moved = moveBlock(DOC, blocks, 0, 1);
+  assert.deepEqual(blocksOf(moved).map((b) => b.type), ['paragraph', 'heading', 'list', 'table']);
+});
+
+test('blocks: いちばん後ろに足せる（空の本文でも）', () => {
+  assert.equal(insertBlock('', null, '- はじめの箇条書き'), '- はじめの箇条書き');
+  const next = insertBlock('本文', null, '## つづき');
+  assert.equal(next, '本文\n\n## つづき');
+});
+
+test('blocks: チェックは行だけで入れ替わる', () => {
+  const blocks = blocksOf(DOC);
+  const item = blocks[2].items[0];
+  const next = toggleCheck(DOC, item.line);
+  assert.equal(next.includes('- [x] やること'), true);
+  assert.equal(next.includes('- [x] 終わったこと'), true, '他の行はそのまま');
+  const back = toggleCheck(next, item.line);
+  assert.equal(back, DOC, '押し直すと元に戻る');
+});
+
+test('blocks: 表は、行と列を足したり消したりできる', () => {
+  const table = tableOf(blocksOf(DOC)[3]);
+  assert.deepEqual(table.head, ['語', '意味']);
+  assert.deepEqual(table.rows, [['apple', 'りんご']]);
+  assert.equal(table.align[1], 'right');
+
+  const withRow = tableWithRow(table);
+  assert.equal(withRow.rows.length, 2);
+  const withCol = tableWithColumn(withRow);
+  assert.equal(withCol.head.length, 3);
+  assert.equal(withCol.rows[0].length, 3);
+
+  const md = tableToMarkdown(withCol);
+  const back = tableOf({ source: md });
+  assert.deepEqual(back.head, ['語', '意味', '']);
+  assert.equal(back.align[1], 'right', '寄せ方は保たれる');
+
+  assert.equal(tableWithoutRow(withRow, 0).rows.length, 1);
+  assert.equal(tableWithoutColumn(withCol, 2).head.length, 2);
+  // 1 列しかない表は、それ以上減らさない
+  assert.equal(tableWithoutColumn({ head: ['a'], align: [null], rows: [['b']] }, 0).head.length, 1);
+});
+
+test('blocks: 表を書き換えても、前後のかたまりは動かない', () => {
+  const blocks = blocksOf(DOC);
+  const table = tableWithRow(tableOf(blocks[3]));
+  const next = replaceBlock(DOC, blocks[3], tableToMarkdown(table));
+  const after = blocksOf(next);
+  assert.deepEqual(after.map((b) => b.type), ['heading', 'paragraph', 'list', 'table']);
+  assert.equal(after[0].source, '# 見出し');
+  assert.equal(after[3].rows.length, 2);
 });
 
 /* ------------------------------------------------- v0.4: 続けたくなる区切り */

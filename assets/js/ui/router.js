@@ -3,6 +3,8 @@
  * `#/notes` のような固定ルートに加えて、`#/note/<id>?from=notes` のような
  * パラメータ付きのルートも扱う。
  */
+import { whenSettled } from './backstack.js';
+
 const listeners = new Set();
 
 /** 現在のハッシュを {segments, params} に分解する */
@@ -38,7 +40,8 @@ export function navigate(target, params) {
     listeners.forEach((fn) => fn());
     return;
   }
-  window.location.hash = next;
+  // 重なりを閉じた直後なら、履歴が落ち着いてから移る
+  whenSettled(() => { window.location.hash = next; });
 }
 
 /** 履歴を増やさずに URL だけ差し替える（新規メモに id が付いたときなど） */
@@ -46,7 +49,8 @@ export function replacePath(target, params) {
   const next = typeof target === 'string' && target.startsWith('#')
     ? target
     : buildPath(target, params);
-  window.history.replaceState(null, '', next);
+  // 「戻る」の扱いに使っている印（state）は消さずに、URL だけ差し替える
+  window.history.replaceState(window.history.state, '', next);
 }
 
 export function onRouteChange(fn) {

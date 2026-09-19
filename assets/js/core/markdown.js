@@ -124,21 +124,28 @@ function listItemsFrom(lines, start) {
       checked = check[1].toLowerCase() === 'x';
       content = check[2];
     }
-    items.push({ inline: parseInline(content), checked, children: [] });
+    items.push({ inline: parseInline(content), checked, children: [], line: i });
     i += 1;
   }
   return { list: { type: 'list', ordered, items }, next: i };
 }
 
-/** Markdown を、画面に出せる構造にする */
+/**
+ * Markdown を、画面に出せる構造にする。
+ * それぞれのかたまりには、元が何行目から何行目だったか（start, end）を持たせる。
+ * 見たままの編集で「このかたまりだけ書き換える」ために使う。
+ */
 export function parseMarkdown(text) {
   const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
   const blocks = [];
   let i = 0;
   let paragraph = null;
+  let paragraphStart = 0;
 
   const flush = () => {
-    if (paragraph && paragraph.length) blocks.push({ type: 'paragraph', lines: paragraph });
+    if (paragraph && paragraph.length) {
+      blocks.push({ type: 'paragraph', lines: paragraph, start: paragraphStart, end: paragraphStart + paragraph.length });
+    }
     paragraph = null;
   };
 
@@ -156,33 +163,35 @@ export function parseMarkdown(text) {
       const body = [];
       i += 1;
       while (i < lines.length && !lines[i].trimStart().startsWith(mark)) { body.push(lines[i]); i += 1; }
+      const codeStart = i - body.length - 1;
       i += 1;   // 閉じるしるしを読み飛ばす
-      blocks.push({ type: 'code', lang, text: body.join('\n') });
+      blocks.push({ type: 'code', lang, text: body.join('\n'), start: codeStart, end: Math.min(i, lines.length) });
       continue;
     }
 
-    if (RULE.test(line)) { flush(); blocks.push({ type: 'rule' }); i += 1; continue; }
+    if (RULE.test(line)) { flush(); blocks.push({ type: 'rule', start: i, end: i + 1 }); i += 1; continue; }
 
     const heading = HEADING.exec(line);
     if (heading) {
       flush();
-      blocks.push({ type: 'heading', level: heading[1].length, inline: parseInline(heading[2]) });
+      blocks.push({ type: 'heading', level: heading[1].length, inline: parseInline(heading[2]), start: i, end: i + 1 });
       i += 1;
       continue;
     }
 
     if (QUOTE.test(line)) {
       flush();
+      const quoteStart = i;
       const inner = [];
       while (i < lines.length && QUOTE.test(lines[i])) { inner.push(QUOTE.exec(lines[i])[1]); i += 1; }
-      blocks.push({ type: 'quote', blocks: parseMarkdown(inner.join('\n')) });
+      blocks.push({ type: 'quote', blocks: parseMarkdown(inner.join('\n')), start: quoteStart, end: i });
       continue;
     }
 
     if (LIST.test(line)) {
       flush();
       const { list, next } = listItemsFrom(lines, i);
-      blocks.push(list);
+      blocks.push({ ...list, start: i, end: next });
       i = next;
       continue;
     }
@@ -190,6 +199,7 @@ export function parseMarkdown(text) {
     // 表（2 行目が区切りのときだけ）
     if (line.includes('|') && i + 1 < lines.length && TABLE_SPLIT.test(lines[i + 1]) && lines[i + 1].includes('|')) {
       flush();
+      const tableStart = i;
       const cells = (row) => row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
       const head = cells(line).map(parseInline);
       const align = cells(lines[i + 1]).map((c) => {
@@ -203,12 +213,12 @@ export function parseMarkdown(text) {
         rows.push(cells(lines[i]).map(parseInline));
         i += 1;
       }
-      blocks.push({ type: 'table', head, align, rows });
+      blocks.push({ type: 'table', head, align, rows, start: tableStart, end: i });
       continue;
     }
 
     // ふつうの行。続くぶんは 1 つの段落にまとめる（改行はそのまま残す）
-    if (!paragraph) paragraph = [];
+    if (!paragraph) { paragraph = []; paragraphStart = i; }
     paragraph.push(parseInline(line));
     i += 1;
   }
