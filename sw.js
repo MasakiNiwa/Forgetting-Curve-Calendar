@@ -7,7 +7,7 @@
  * - バージョンを変えると古いキャッシュを破棄する。
  * - メモのデータはキャッシュではなく localStorage にあるため、ここでは扱わない。
  */
-const VERSION = 'v0.11.0';
+const VERSION = 'v0.11.1';
 const PREFIX = 'fcc-';
 const CACHE = `${PREFIX}${VERSION}`;
 
@@ -20,12 +20,12 @@ const PRECACHE = [
   './assets/css/app.css',
   './assets/icons/favicon.svg',
   './assets/js/main.js',
-  './assets/js/core/blocks.js',
   './assets/js/core/config.js',
   './assets/js/core/curve.js',
   './assets/js/core/date.js',
   './assets/js/core/drafts.js',
   './assets/js/editor/history.js',
+  './assets/js/editor/richText.js',
   './assets/js/editor/textEditor.js',
   './assets/js/core/exporter.js',
   './assets/js/core/markdown.js',
@@ -40,7 +40,6 @@ const PRECACHE = [
   './assets/js/ui/app.js',
   './assets/js/ui/backstack.js',
   './assets/js/ui/backup.js',
-  './assets/js/ui/blockEditor.js',
   './assets/js/ui/charts.js',
   './assets/js/ui/components.js',
   './assets/js/ui/dom.js',

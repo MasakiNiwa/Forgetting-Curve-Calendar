@@ -63,11 +63,11 @@ export function renderSettings(store) {
         class: 'select',
         onChange: (e) => store.updateSettings({ editorMode: e.target.value }),
       },
-      h('option', { value: 'rich', selected: s.editorMode !== 'source' }, '見たままで編集'),
-      h('option', { value: 'source', selected: s.editorMode === 'source' }, 'ソース（素の文字）で編集')),
+      h('option', { value: 'rich', selected: s.editorMode !== 'source' }, '見たまま（ふつうに書く）'),
+      h('option', { value: 'source', selected: s.editorMode === 'source' }, 'ソース（Markdown の素の文字）')),
       h('span', { class: 'field__hint' },
-        '見たままでは、押したところだけを直せます（表はマス目で、チェックは押すだけ）。'
-        + '記法で細かく書きたいときは、編集画面の右上からいつでも切り替えられます。')),
+        '見たままでは、メモ帳と同じようにそのまま書けます（「- 」で箇条書き、「# 」で見出しに変わります）。'
+        + '記法をそのまま見たいときは、編集画面の右上からいつでも切り替えられます。')),
     h('div', { class: 'divider' }),
     switchRow({
       title: 'Markdown として読む',
