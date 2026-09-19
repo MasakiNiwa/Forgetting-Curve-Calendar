@@ -1,6 +1,15 @@
 /** 画面をまたいで使う部品 */
-import { bodyView } from './markdownView.js';
+import { noteBodyView } from './docView.js';
 import { markdownToPlain } from '../core/markdown.js';
+
+/**
+ * 一覧の抜粋にする文字。
+ * 文書データのメモは、もともと素の文字なのでそのまま出す。
+ * v0.11 以前のメモだけ、Markdown の記号を外して見せる。
+ */
+function plainOf(note, text) {
+  return note?.doc ? String(text || '') : markdownToPlain(text);
+}
 import { snippet } from '../core/search.js';
 import { h, button, iconButton } from './dom.js';
 import { icon } from './icons.js';
@@ -79,14 +88,15 @@ export function reviewCard({ store, note, review, onOpen, showActions = true }) 
     const text = full ? (note.body || '').trim() : (note.cue ? note.body : bodyPreview(note));
     if (!text) return;
     if (full) {
-      // 読むときだけ Markdown の見た目にする（書くときは素の文字のまま）
-      contentSlot.appendChild(bodyView(text, store.settings, {
+      // 読むときの見た目に整えて出す（文書データを持たない古いメモは Markdown として）
+      contentSlot.appendChild(noteBodyView(note, store.settings, {
+        text,
         className: 'note-card__body note-card__body--full',
         plainClass: 'note-card__body note-card__body--full',
       }));
       return;
     }
-    contentSlot.appendChild(h('p', { class: 'note-card__body' }, markdownToPlain(text)));
+    contentSlot.appendChild(h('p', { class: 'note-card__body' }, plainOf(note, text)));
   };
 
   const meta = h('div', { class: 'note-card__meta' },
@@ -193,7 +203,7 @@ export function noteCard({ store, note, onOpen, subtitle, actions = [], highligh
   note.cue ? h('p', { class: 'note-card__cue' }, `手掛かり: ${note.cue}`) : null,
   highlight?.length
     ? hitPreview(note.body, highlight)
-    : (preview ? h('p', { class: 'note-card__body' }, markdownToPlain(preview)) : null),
+    : (preview ? h('p', { class: 'note-card__body' }, plainOf(note, preview)) : null),
   h('div', { class: 'note-card__meta' },
     h('span', {}, subtitle || `作成 ${formatMedium(note.anchorDate)}`),
     h('span', { class: 'note-card__step' }, `${done}/${note.reviews.length}`),

@@ -57,22 +57,10 @@ export function renderSettings(store) {
       onChange: (v) => store.updateSettings({ showCreatedOnCalendar: v }),
     }),
     h('div', { class: 'divider' }),
-    h('label', { class: 'field', style: { marginBottom: '0' } },
-      h('span', { class: 'field__label' }, 'メモを開いたとき'),
-      h('select', {
-        class: 'select',
-        onChange: (e) => store.updateSettings({ editorMode: e.target.value }),
-      },
-      h('option', { value: 'rich', selected: s.editorMode !== 'source' }, '見たまま（ふつうに書く）'),
-      h('option', { value: 'source', selected: s.editorMode === 'source' }, 'ソース（Markdown の素の文字）')),
-      h('span', { class: 'field__hint' },
-        '見たままでは、メモ帳と同じようにそのまま書けます（「- 」で箇条書き、「# 」で見出しに変わります）。'
-        + '記法をそのまま見たいときは、編集画面の右上からいつでも切り替えられます。')),
-    h('div', { class: 'divider' }),
     switchRow({
-      title: 'Markdown として読む',
-      desc: '見出し・箇条書き・チェックボックス・引用・コード・表などを、読むときだけ整えて表示します。'
-        + '書くときは素の文字のままです。',
+      title: '古いメモを Markdown として読む',
+      desc: 'v0.11 以前に書いたメモの「# 」や「- 」を、読むときだけ整えて表示します。'
+        + '編集画面で開いて書き直すと、見たままの形で保存されます。',
       checked: s.markdown,
       onChange: (v) => store.updateSettings({ markdown: v }),
     })));

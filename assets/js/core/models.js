@@ -6,6 +6,7 @@ import { SCHEMA_VERSION, APP_VERSION } from './config.js';
 import { isValidKey, todayKey } from './date.js';
 import { MAX_SHIELDS, createStreak, pruneDays } from './missions.js';
 import { markdownToPlain } from './markdown.js';
+import { docToText, normalizeDoc } from './doc.js';
 import {
   DEFAULT_PRESET_ID, DEFAULT_SPREAD_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, getSpread,
   localDayOf, randomSeed, refreshNote, resolveIntervals, sanitizeIntervals, sanitizeSeed,
@@ -35,8 +36,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showCreatedOnCalendar: true,
   defaultExportFormat: 'markdown',
   missionsEnabled: true,      // デイリーミッション（毎日の小さな目標）
-  markdown: true,             // 本文を Markdown として表示する
-  editorMode: 'rich',         // メモを開いたときの編集のしかた（rich=見たまま / source=素の文字）
+  markdown: true,             // v0.11 以前のメモを Markdown として表示する
 });
 
 /** 墓標（削除済みメモの id -> 削除時刻）。古すぎるものは捨てる。 */
@@ -166,12 +166,17 @@ export function createNote(input, settings) {
     : getSpread(settings.spreadId).ratio;
   const seed = input.seed !== undefined ? sanitizeSeed(input.seed) : randomSeed();
 
+  // 本文の正本は文書データ。素の文字は探す・数える・書き出すための写し
+  const doc = normalizeDoc(input.doc);
+  const body = doc ? docToText(doc) : (input.body || '').trim();
+
   const note = {
     id: makeNoteId(),
     parentId: input.parentId || null,
     title: (input.title || '').trim(),
     cue: (input.cue || '').trim(),
-    body: (input.body || '').trim(),
+    doc,
+    body,
     tags: normalizeTags(input.tags),
     anchorDate,
     createdAt: now,
@@ -207,8 +212,10 @@ export function displayTitle(note) {
   if (note.title) return note.title;
   const firstLine = (note.body || '').split('\n').find((l) => l.trim());
   if (!firstLine) return '(無題のメモ)';
-  // 「# 見出し」のような書き方は、記号を外して見せる
-  const trimmed = markdownToPlain(firstLine).trim() || firstLine.trim();
+  // 「# 見出し」のような書き方をしていた古いメモは、記号を外して見せる
+  const trimmed = note.doc
+    ? firstLine.trim()
+    : (markdownToPlain(firstLine).trim() || firstLine.trim());
   return trimmed.length > TITLE_MAX ? `${trimmed.slice(0, TITLE_MAX)}…` : trimmed;
 }
 
@@ -259,7 +266,6 @@ export function normalizeSettings(raw) {
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
   s.missionsEnabled = s.missionsEnabled !== false;
   s.markdown = s.markdown !== false;
-  s.editorMode = s.editorMode === 'source' ? 'source' : 'rich';
   s.customIntervals = sanitizeIntervals(s.customIntervals);
   s.spreadId = getSpread(s.spreadId).id;
   const limit = Number(s.overdueDailyLimit);
@@ -311,6 +317,8 @@ export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
     parentId: typeof raw.parentId === 'string' ? raw.parentId : null,
     title: typeof raw.title === 'string' ? raw.title : '',
     cue: typeof raw.cue === 'string' ? raw.cue : '',
+    // 文書データを持たない（v0.11 以前の）メモは、書いてあった文字のまま扱う
+    doc: normalizeDoc(raw.doc),
     body: typeof raw.body === 'string' ? raw.body : '',
     tags: normalizeTags(raw.tags),
     anchorDate,
@@ -372,6 +380,8 @@ export function toStoredNote(note) {
     origin: note.origin,
     events: note.events || [],
   };
+  // 文書データは、あるメモだけ持つ（v0.11 以前のメモは文字のまま）
+  if (note.doc) stored.doc = note.doc;
   // 食い違った本文の退避は、あるときだけ持つ
   if (note.conflicts?.length) stored.conflicts = note.conflicts;
   return stored;

@@ -109,11 +109,25 @@ function v4ToV5(data) {
   return { ...data, schemaVersion: 5, activity };
 }
 
+/**
+ * v5 → v6
+ * 本文を「文書データ」（doc）でも持てるようにした。
+ *
+ * ここでは既存のメモに手を触れない。書いてあった文字（body）はそのまま残し、
+ * 文書データはそのメモを編集画面で開いたときに作る。
+ * いっせいに作り直すと、数が多いときに待たされるうえ、
+ * 読み取りの取りこぼしがあっても気づけないため。
+ */
+function v5ToV6(data) {
+  return { ...data, schemaVersion: 6 };
+}
+
 const MIGRATIONS = {
   1: v1ToV2,
   2: v2ToV3,
   3: v3ToV4,
   4: v4ToV5,
+  5: v5ToV6,
 };
 
 export function migrate(raw) {
