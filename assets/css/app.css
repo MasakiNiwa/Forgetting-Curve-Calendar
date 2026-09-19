@@ -1724,3 +1724,21 @@ button, input, textarea, select { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .omikuji--fresh { animation: none; }
 }
+
+/* ==========================================================================
+   見るだけのタブ（編集できるタブは 1 つだけ）
+   ========================================================================== */
+
+:root[data-viewer="true"] .fab { display: none; }
+/* 押しても保存されない操作は、はっきり触れないようにする */
+:root[data-viewer="true"] .note-card__actions .btn,
+:root[data-viewer="true"] .rating-btn,
+:root[data-viewer="true"] .today-card__cta,
+:root[data-viewer="true"] .ed__shortcuts,
+:root[data-viewer="true"] .ed__toolbar .icon-btn:not([aria-label="一覧へ戻る"]) {
+  opacity: .45;
+  pointer-events: none;
+}
+:root[data-viewer="true"] .ed__body,
+:root[data-viewer="true"] .ed__title,
+:root[data-viewer="true"] .ed__cue-input { background: var(--fcc-surface-container-low); }

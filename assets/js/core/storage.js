@@ -47,6 +47,11 @@ export class LocalStorageAdapter {
   }
 
   async save(data) {
+    this.saveSync(data);
+  }
+
+  /** タブを閉じる直前など、待っていられない場面のための同期保存 */
+  saveSync(data) {
     window.localStorage.setItem(this.key, JSON.stringify(data));
     window.localStorage.setItem(`${this.key}.token`, data?.meta?.saveToken ?? '');
   }
@@ -68,7 +73,8 @@ export class MemoryAdapter {
 
   async load() { return this.data; }
   async token() { return this.data ? (this.data.meta?.saveToken ?? '') : undefined; }
-  async save(data) { this.data = JSON.parse(JSON.stringify(data)); }
+  async save(data) { this.saveSync(data); }
+  saveSync(data) { this.data = JSON.parse(JSON.stringify(data)); }
   async clear() { this.data = null; }
 }
 

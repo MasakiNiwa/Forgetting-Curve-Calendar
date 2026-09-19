@@ -353,6 +353,20 @@ export function normalizeData(raw) {
   const ids = new Set(notes.map((n) => n.id));
   notes.forEach((n) => { if (n.parentId && !ids.has(n.parentId)) n.parentId = null; });
 
+  // 自分が自分の親（または親をたどると自分に戻る）データは、たどれなくなるので切る
+  const byId = new Map(notes.map((n) => [n.id, n]));
+  notes.forEach((note) => {
+    const seen = new Set([note.id]);
+    let cursor = note;
+    while (cursor.parentId) {
+      if (seen.has(cursor.parentId)) { cursor.parentId = null; break; }
+      seen.add(cursor.parentId);
+      const parent = byId.get(cursor.parentId);
+      if (!parent) break;
+      cursor = parent;
+    }
+  });
+
   return {
     schemaVersion: SCHEMA_VERSION,
     notes,

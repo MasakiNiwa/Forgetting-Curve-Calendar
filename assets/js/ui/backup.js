@@ -74,8 +74,11 @@ export function openRestoreDialog(store, raw) {
       {
         label: '追加',
         className: 'btn btn--tonal',
-        onClick: (close) => {
+        onClick: async (close) => {
           const res = store.importData(raw, 'merge');
+          // 保存できたことを確かめてから「できました」と言う
+          const saved = await store.flush();
+          if (!saved.ok) { toast('復元しましたが、保存できませんでした。空き容量をご確認ください。'); return; }
           toast(`${res.imported} 件を追加しました（重複 ${res.skipped} 件はスキップ）`);
           close();
         },
@@ -92,6 +95,8 @@ export function openRestoreDialog(store, raw) {
           });
           if (!ok) return;
           const res = store.importData(raw, 'replace');
+          const saved = await store.flush();
+          if (!saved.ok) { toast('復元しましたが、保存できませんでした。空き容量をご確認ください。'); return; }
           toast(`${res.imported} 件を復元しました`);
           close();
         },

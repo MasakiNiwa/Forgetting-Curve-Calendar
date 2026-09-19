@@ -21,6 +21,7 @@ import { SCHEMA_VERSION } from '../assets/js/core/config.js';
 import {
   FORTUNES, RANKS as OMIKUJI_RANKS, drawOmikuji, pickRank, readOmikuji,
 } from '../assets/js/core/omikuji.js';
+import { HEARTBEAT_MS, STALE_MS, TabLock } from '../assets/js/core/tabLock.js';
 import {
   MISSION_COUNT, advanceStreak, createStreak, getMissionDef, levelInfo, pickMissions,
   pointsForLevel,
@@ -328,7 +329,9 @@ test('migration: v1 のデータを移行しても予定日が変わらない（
       status: 'active',
       schedule: { presetId: 'standard', intervals: [1, 3, 7, 14], ease: 2.6, adaptive: true },
       reviews: [
-        { id: 'r1', step: 0, due: '2026-09-02', status: 'done', rating: 'known', completedAt: '2026-09-02T04:00:00.000Z', extra: false },
+        // 記録した時刻は「その端末の現地時刻」として解釈される。
+        // どのタイムゾーンで動かしても同じ日になるよう、正午で作る。
+        { id: 'r1', step: 0, due: '2026-09-02', status: 'done', rating: 'known', completedAt: new Date(2026, 8, 2, 12, 0, 0).toISOString(), extra: false },
         { id: 'r2', step: 1, due: '2026-09-04', status: 'pending', rating: null, completedAt: null, extra: false },
         { id: 'r3', step: 2, due: '2026-09-08', status: 'pending', rating: null, completedAt: null, extra: false },
         { id: 'r4', step: 3, due: '2026-09-16', status: 'pending', rating: null, completedAt: null, extra: false },
@@ -1221,24 +1224,74 @@ test('store: 直近に出た占いは続けて出さない', async () => {
 
 /* ------------------------------------------------- v0.7.1: 大量のメモへの備え */
 
-test('store: 保存はまとめて 1 回にする', async () => {
+test('store: 本文の入力はまとめて 1 回、確定の操作はすぐ書く', async () => {
   const store = new Store(new MemoryAdapter());
   await store.load();
+  const note = store.addNote({ body: 'はじめの本文' });
+  await store.flush();
+
   let writes = 0;
   const save = store.adapter.save.bind(store.adapter);
   store.adapter.save = async (data) => { writes += 1; return save(data); };
 
-  for (let i = 0; i < 20; i += 1) store.addNote({ body: `まとめ保存 ${i}` });
+  // 本文の入力は予約にまとめる
+  for (let i = 0; i < 20; i += 1) store.updateNote(note.id, { body: `はじめの本文${'あ'.repeat(i + 1)}` });
   assert.equal(writes, 0, '予約しただけでは書かない');
 
   const result = await store.flush();
   assert.equal(result.ok, true);
-  assert.equal(writes, 1, '20 回の変更が 1 回の書き込みになる');
-  assert.equal(store.adapter.data.notes.length, 20, '最新が保存されている');
+  assert.equal(writes, 1, '20 回の入力が 1 回の書き込みになる');
+  assert.equal(store.adapter.data.notes[0].body.endsWith('あ'.repeat(20)), true, '最新が残る');
 
   // 変更が無ければ、もう書かない
   await store.flush();
   assert.equal(writes, 1);
+
+  // 「記録した」はその場で書く（直後に閉じても残るように）
+  const review = store.getNote(note.id).reviews.find((r) => r.status === 'pending');
+  store.rateReview(note.id, review.id, 'known');
+  await store.flush();
+  assert.equal(writes, 2, '想起の記録は予約せずに書く');
+  assert.equal(store.adapter.data.notes[0].events.length, 1, '保存先にも記録が入っている');
+});
+
+test('store: 閉じる直前は、待たずにその場で書ける', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const note = store.addNote({ body: '同期保存のテスト' });
+  await store.flush();
+
+  store.updateNote(note.id, { body: '同期保存のテスト＋書きかけ' });
+  assert.equal(store.adapter.data.notes[0].body, '同期保存のテスト', 'まだ予約の段階');
+  assert.equal(store.flushSync(), true);
+  assert.equal(store.adapter.data.notes[0].body, '同期保存のテスト＋書きかけ', 'その場で書けた');
+  assert.equal(store.flushSync(), false, '変更が無ければ何もしない');
+});
+
+test('store: 見るだけのタブは、ぜったいに書かない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  store.addNote({ body: '先に入れておくメモ' });
+  await store.flush();
+
+  let writes = 0;
+  const save = store.adapter.save.bind(store.adapter);
+  store.adapter.save = async (data) => { writes += 1; return save(data); };
+
+  store.setReadOnly(true);
+  store.addNote({ body: '見るだけのタブで書いたメモ' });
+  const result = await store.flush();
+  assert.equal(result.ok, false);
+  assert.equal(result.readOnly, true);
+  assert.equal(store.flushSync(), false);
+  assert.equal(writes, 0, '1 度も書かない');
+  assert.equal(store.adapter.data.notes.length, 1, '保存先は元のまま');
+
+  // 編集できるタブに戻したら、また書ける
+  store.setReadOnly(false);
+  store.addNote({ body: '戻ってから書いたメモ' });
+  await store.flush();
+  assert.equal(writes >= 1, true);
 });
 
 test('store: 子メモの数は数え直さずに使い回す', async () => {
@@ -1252,4 +1305,148 @@ test('store: 子メモの数は数え直さずに使い回す', async () => {
 
   store.addNote({ body: '子3', parentId: parent.id });
   assert.equal(store.childCountOf(parent.id), 3, '変更のあとは数え直す');
+});
+
+/* --------------------------------------------- v0.8: 書けるタブは 1 つだけ */
+
+/** localStorage の代役（タブ間で共有する） */
+function fakeStorage() {
+  const map = new Map();
+  return {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => map.set(k, String(v)),
+    removeItem: (k) => map.delete(k),
+    get size() { return map.size; },
+  };
+}
+
+test('tabLock: あとから開いたタブは見るだけになる', () => {
+  const storage = fakeStorage();
+  let clock = 1_000_000;
+  const now = () => clock;
+
+  const a = new TabLock({ storage, now, id: 'tab_a' });
+  assert.equal(a.claim(), true, '最初のタブは書ける');
+
+  const b = new TabLock({ storage, now, id: 'tab_b' });
+  assert.equal(b.claim(), false, 'あとのタブは見るだけ');
+  assert.equal(b.owner, false);
+
+  // 持ち主が生きているあいだは、ずっと見るだけ
+  clock += HEARTBEAT_MS;
+  a.beat();
+  assert.equal(b.claim(), false);
+});
+
+test('tabLock: 閉じたタブの持ち主は引き継げる', () => {
+  const storage = fakeStorage();
+  let clock = 1_000_000;
+  const a = new TabLock({ storage, now: () => clock, id: 'tab_a' });
+  a.claim();
+
+  // タブが閉じて、印が古くなった
+  clock += STALE_MS + 1000;
+  const b = new TabLock({ storage, now: () => clock, id: 'tab_b' });
+  assert.equal(b.claim(), true, '古い印は引き継げる');
+  assert.equal(b.currentOwner().id, 'tab_b');
+});
+
+test('tabLock: 「このタブで編集する」で譲り受けられる', async () => {
+  const storage = fakeStorage();
+  let clock = 1_000_000;
+  const a = new TabLock({ storage, now: () => clock, id: 'tab_a' });
+  const b = new TabLock({ storage, now: () => clock, id: 'tab_b' });
+  a.claim();
+  b.claim();
+  assert.equal(b.owner, false);
+
+  let flushed = 0;
+  a.onRelease = async () => { flushed += 1; };
+
+  // B が「譲ってほしい」と合図し、A が受け取って保存してから手を離す
+  const taking = b.takeOver({ wait: 0, sleep: async () => {
+    assert.equal(a.handleSignal('fcc.owner.request.v1'), 'release', 'A は依頼に気づく');
+    await a.release();
+  } });
+  assert.equal(await taking, true);
+  assert.equal(flushed, 1, '譲る前に保存している');
+  assert.equal(b.owner, true);
+  assert.equal(a.owner, false);
+  assert.equal(b.currentOwner().id, 'tab_b');
+
+  // 持ち主が入れ替わったことに、A 側も気づける
+  assert.equal(a.handleSignal('fcc.owner.v1'), null);
+  assert.equal(a.owner, false);
+});
+
+test('tabLock: 返事がなくても、しばらく待てば引き継げる', async () => {
+  const storage = fakeStorage();
+  let clock = 1_000_000;
+  const a = new TabLock({ storage, now: () => clock, id: 'tab_a' });
+  a.claim();
+  const b = new TabLock({ storage, now: () => clock, id: 'tab_b' });
+  b.claim();
+
+  // A は固まっていて返事をしない
+  assert.equal(await b.takeOver({ wait: 0, sleep: async () => {} }), true);
+  assert.equal(b.owner, true);
+  assert.equal(b.currentOwner().id, 'tab_b');
+});
+
+test('store: 読み直しは統合せず、保存されている内容で置き換える', async () => {
+  const adapter = new MemoryAdapter();
+  const owner = new Store(adapter);
+  await owner.load();
+  const note = owner.addNote({ body: '元のメモ' });
+  const review = owner.getNote(note.id).reviews.find((r) => r.status === 'pending');
+  owner.rateReview(note.id, review.id, 'known');
+  await owner.flush();
+
+  // 見るだけのタブが、古い状態を持ったまま開いている
+  const viewer = new Store(adapter);
+  await viewer.load();
+  viewer.setReadOnly(true);
+  assert.equal(viewer.notes.length, 1);
+
+  // 持ち主が記録を取り消して保存した
+  owner.undoLastEvent(note.id);
+  owner.deleteNote(note.id);
+  owner.addNote({ body: '新しいメモ' });
+  await owner.flush();
+
+  // 譲り受けたタブは「いま保存されているもの」で読み直す（統合しない）
+  viewer.setReadOnly(false);
+  await viewer.reload();
+  assert.equal(viewer.notes.length, 1);
+  assert.equal(viewer.notes[0].body, '新しいメモ', '消したメモは戻らない');
+  assert.equal(viewer.notes[0].events.length, 0, '取り消した記録も戻らない');
+});
+
+test('models: 循環した親子関係は読み込み時に切る', () => {
+  const data = normalizeData({
+    schemaVersion: SCHEMA_VERSION,
+    notes: [
+      { id: 'n_self', parentId: 'n_self', body: '自分が親' },
+      { id: 'n_a', parentId: 'n_b', body: 'A' },
+      { id: 'n_b', parentId: 'n_a', body: 'B' },
+    ],
+    settings: {},
+    meta: {},
+  });
+  assert.equal(data.notes.find((n) => n.id === 'n_self').parentId, null);
+  const a = data.notes.find((n) => n.id === 'n_a');
+  const b = data.notes.find((n) => n.id === 'n_b');
+  assert.equal(a.parentId === null || b.parentId === null, true, '輪のどこかは切れている');
+});
+
+test('store: 壊れた親子関係でも削除で止まらない', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const a = store.addNote({ body: 'A' });
+  const b = store.addNote({ body: 'B', parentId: a.id });
+  // 読み込みを経ずに輪を作る（データが壊れていた場合の保険）
+  store.getNote(a.id).parentId = b.id;
+  const removed = store.deleteNote(a.id);
+  assert.equal(removed.length, 2);
+  assert.equal(store.notes.length, 0);
 });
