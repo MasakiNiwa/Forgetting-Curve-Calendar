@@ -1229,7 +1229,27 @@ button, input, textarea, select { font: inherit; color: inherit; }
   -webkit-overflow-scrolling: touch;
   overflow-anchor: none;
 }
+.ed__doc[hidden] { display: none; }
 .ed__doc-inner { padding: 0 4px; }
+
+/* プレビュー（読む形）。本文と同じ幅・同じ余白で出す */
+.ed__preview {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 16px 40px;
+  outline: none;
+}
+.ed__preview[hidden] { display: none; }
+.ed__preview-title { font-size: 1.32rem; font-weight: 700; margin: 0 0 6px; line-height: 1.35; }
+.ed__preview-cue {
+  display: flex; gap: 6px; align-items: center;
+  color: var(--fcc-on-surface-variant);
+  font-size: .95rem;
+  margin: 0 0 16px;
+}
+.ed__preview-body { font-size: .98rem; line-height: 1.85; }
+.ed__preview-empty { color: var(--fcc-on-surface-variant); }
 
 /* 境界線は引かず、文字の大きさで役割を分ける（圧迫感を出さない） */
 .ed__head { padding: 14px 12px 0; }
@@ -1313,6 +1333,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   background: var(--fcc-surface-container-low);
 }
 .ed__shortcuts::-webkit-scrollbar { display: none; }
+.ed__shortcuts[hidden] { display: none; }
 .ed__shortcut {
   display: flex;
   flex-direction: column;
@@ -1767,3 +1788,98 @@ button, input, textarea, select { font: inherit; color: inherit; }
 :root[data-viewer="true"] .ed__body,
 :root[data-viewer="true"] .ed__title,
 :root[data-viewer="true"] .ed__cue-input { background: var(--fcc-surface-container-low); }
+
+/* ------------------------------------------------------------------ */
+/* Markdown の表示（読むときだけ整える）                               */
+/* ------------------------------------------------------------------ */
+.md {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md__p { margin: 0 0 .7em; white-space: normal; }
+.md__h {
+  margin: 1.1em 0 .45em;
+  font-weight: 700;
+  line-height: 1.35;
+}
+/* 見出しは段階を付けつつ、本文と離れすぎないようにする */
+.md__h--1 { font-size: 1.16em; }
+.md__h--2 { font-size: 1.1em; }
+.md__h--3 { font-size: 1.04em; }
+.md__h--4, .md__h--5, .md__h--6 { font-size: 1em; color: var(--fcc-on-surface-variant); }
+.md__list { margin: 0 0 .7em; padding-left: 1.4em; }
+.md__list .md__list { margin: .2em 0 0; }
+.md__item { margin: .18em 0; }
+/* チェックの行だけ、点のかわりに箱を出す（ふつうの行は点のまま） */
+.md__item--check {
+  list-style: none;
+  margin-left: -1.15em;
+  display: flex;
+  gap: .4em;
+  align-items: flex-start;
+}
+.md__item--done .md__item-text { color: var(--fcc-on-surface-variant); text-decoration: line-through; }
+.md__box { flex: none; line-height: 1.5; }
+.md__quote {
+  margin: 0 0 .7em;
+  padding: .1em 0 .1em .9em;
+  border-left: 3px solid var(--fcc-outline-variant);
+  color: var(--fcc-on-surface-variant);
+}
+.md__code {
+  font-family: var(--fcc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: .92em;
+  background: var(--fcc-surface-container-high);
+  border-radius: 4px;
+  padding: .1em .35em;
+}
+.md__pre {
+  margin: 0 0 .7em;
+  padding: .7em .8em;
+  border-radius: var(--fcc-radius-s);
+  background: var(--fcc-surface-container-high);
+  overflow-x: auto;
+}
+.md__pre-code {
+  font-family: var(--fcc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: .88em;
+  white-space: pre;
+  background: none;
+  padding: 0;
+}
+.md__rule { border: 0; border-top: 1px solid var(--fcc-outline-variant); margin: 1em 0; }
+.md__link { color: var(--fcc-primary); text-decoration: underline; text-underline-offset: 2px; }
+.md__table-wrap { overflow-x: auto; margin: 0 0 .7em; }
+.md__table { border-collapse: collapse; font-size: .92em; }
+.md__table th, .md__table td {
+  border: 1px solid var(--fcc-outline-variant);
+  padding: .32em .6em;
+  text-align: left;
+}
+.md__table th { background: var(--fcc-surface-container); font-weight: 650; }
+
+/* 本文の置き場（詳細シート） */
+.detail-body {
+  margin-top: 14px;
+  background: var(--fcc-surface-container);
+  padding: 14px;
+  border-radius: var(--fcc-radius-m);
+  font-size: .9rem;
+}
+.detail-body__text { white-space: pre-wrap; word-break: break-word; }
+
+/* 探しているとき、当たったところに印を付ける */
+.note-card__body--hit {
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  color: var(--fcc-on-surface);
+}
+.note-card__hit {
+  background: var(--fcc-tertiary-container, var(--fcc-primary-container));
+  color: var(--fcc-on-tertiary-container, var(--fcc-on-primary-container));
+  border-radius: 3px;
+  padding: 0 1px;
+}

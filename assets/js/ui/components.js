@@ -1,4 +1,7 @@
 /** 画面をまたいで使う部品 */
+import { bodyView } from './markdownView.js';
+import { markdownToPlain } from '../core/markdown.js';
+import { snippet } from '../core/search.js';
 import { h, button, iconButton } from './dom.js';
 import { icon } from './icons.js';
 import { toast } from './overlays.js';
@@ -74,11 +77,16 @@ export function reviewCard({ store, note, review, onOpen, showActions = true }) 
   const renderBody = ({ full = false } = {}) => {
     // 答え合わせでは省略せず原文を出す。一覧の見た目用の省略と混同しない
     const text = full ? (note.body || '').trim() : (note.cue ? note.body : bodyPreview(note));
-    if (text) {
-      contentSlot.appendChild(h('p', {
-        class: full ? 'note-card__body note-card__body--full' : 'note-card__body',
-      }, text));
+    if (!text) return;
+    if (full) {
+      // 読むときだけ Markdown の見た目にする（書くときは素の文字のまま）
+      contentSlot.appendChild(bodyView(text, store.settings, {
+        className: 'note-card__body note-card__body--full',
+        plainClass: 'note-card__body note-card__body--full',
+      }));
+      return;
     }
+    contentSlot.appendChild(h('p', { class: 'note-card__body' }, markdownToPlain(text)));
   };
 
   const meta = h('div', { class: 'note-card__meta' },
@@ -165,7 +173,7 @@ function lastEventIdFor(note, review) {
 }
 
 /** メモ一覧・日別パネルで使うシンプルなメモカード */
-export function noteCard({ store, note, onOpen, subtitle, actions = [] }) {
+export function noteCard({ store, note, onOpen, subtitle, actions = [], highlight = null }) {
   const next = note.reviews.find((r) => r.status === 'pending');
   const done = note.reviews.filter((r) => r.status !== 'pending').length;
   const childCount = store.childCountOf(note.id);
@@ -183,7 +191,9 @@ export function noteCard({ store, note, onOpen, subtitle, actions = [] }) {
       onClick: (e) => { e.stopPropagation(); onOpen?.(note, 'menu'); },
     })),
   note.cue ? h('p', { class: 'note-card__cue' }, `手掛かり: ${note.cue}`) : null,
-  preview ? h('p', { class: 'note-card__body' }, preview) : null,
+  highlight?.length
+    ? hitPreview(note.body, highlight)
+    : (preview ? h('p', { class: 'note-card__body' }, markdownToPlain(preview)) : null),
   h('div', { class: 'note-card__meta' },
     h('span', {}, subtitle || `作成 ${formatMedium(note.anchorDate)}`),
     h('span', { class: 'note-card__step' }, `${done}/${note.reviews.length}`),
@@ -191,6 +201,25 @@ export function noteCard({ store, note, onOpen, subtitle, actions = [] }) {
     childCount ? h('span', {}, `追加メモ ${childCount}`) : null,
     note.tags.length ? tagChips(note.tags) : null),
   actions.length ? h('div', { class: 'note-card__actions note-card__actions--quiet' }, ...actions) : null);
+}
+
+/**
+ * 探しているときのカードの抜粋。
+ * 当たった行を抜き出し、当たったところに印を付ける。
+ */
+function hitPreview(body, ranges) {
+  const cut = snippet(body || '', ranges, { length: 110 });
+  const p = h('p', { class: 'note-card__body note-card__body--hit' });
+  if (!cut.head) p.appendChild(document.createTextNode('…'));
+  let at = 0;
+  cut.ranges.forEach(([start, end]) => {
+    if (start > at) p.appendChild(document.createTextNode(cut.text.slice(at, start)));
+    p.appendChild(h('mark', { class: 'note-card__hit' }, cut.text.slice(start, end)));
+    at = end;
+  });
+  if (at < cut.text.length) p.appendChild(document.createTextNode(cut.text.slice(at)));
+  if (!cut.tail) p.appendChild(document.createTextNode('…'));
+  return p;
 }
 
 /** 復習履歴のタイムライン */

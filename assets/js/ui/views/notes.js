@@ -5,6 +5,7 @@ import { noteCard, emptyState } from '../components.js';
 import { openNoteEditor, openNoteDetail, openNoteMenu } from '../editor.js';
 import { openExportDialog } from '../exportDialog.js';
 import { toast } from '../overlays.js';
+import { parseQuery, rangesIn, searchNotes } from '../../core/search.js';
 import { displayTitle } from '../../core/models.js';
 import { formatRelative, formatSmart } from '../../core/date.js';
 
@@ -55,7 +56,7 @@ export function renderNotes(store) {
   let queryTimer = null;
   const searchInput = h('input', {
     type: 'search',
-    placeholder: 'メモ・手掛かり・タグを検索',
+    placeholder: '検索（空白で絞り込み、#タグ、-除外）',
     value: state.query,
     'aria-label': 'メモを検索',
     onInput: (e) => {
@@ -157,7 +158,7 @@ export function renderNotes(store) {
   let moreObserver = null;
 
   function renderList() {
-    const items = applyQuery(selectNotes(store));
+    const { items, query } = applyQuery(selectNotes(store));
     list.replaceChildren();
     clear(more);
     more.hidden = true;
@@ -168,7 +169,7 @@ export function renderNotes(store) {
         iconName: store.notes.length ? 'search' : 'sparkle',
         title: store.notes.length ? '条件に合うメモがありません' : 'まだメモがありません',
         text: store.notes.length
-          ? '検索語やフィルタを変えてみてください。'
+          ? '空白で区切ると「どちらも含む」、#タグでタグ、-ことばで除外できます。'
           : '最初のメモを書くと、忘却曲線に沿った復習がカレンダーに並びます。',
         action: store.notes.length ? null : button('メモを書く', {
           className: 'btn',
@@ -220,6 +221,8 @@ export function renderNotes(store) {
         store,
         note,
         subtitle: subtitleFor(note, next),
+        // 探しているときは、当たった行を抜き出して示す（画面に出すぶんだけ調べる）
+        highlight: query.terms.length ? rangesIn(note, query) : null,
         // 選んだら、そのまま全画面の編集画面へ入る
         onOpen: (n, kind) => (kind === 'menu' ? openNoteMenu(store, n) : openNoteEditor(store, { noteId: n.id, returnTo: 'notes' })),
         actions: [
@@ -287,13 +290,10 @@ function selectNotes(store) {
 }
 
 function applyQuery(notes) {
-  const q = state.query.trim().toLowerCase();
   let items = notes;
   if (state.tag) items = items.filter((n) => n.tags.includes(state.tag));
-  if (q) {
-    items = items.filter((n) => `${displayTitle(n)}\n${n.cue}\n${n.body}\n${n.tags.join(' ')}`
-      .toLowerCase().includes(q));
-  }
+  const query = parseQuery(state.query);
+  items = searchNotes(items, query, { titleOf: displayTitle });
   const nextDue = (n) => n.reviews.find((r) => r.status === 'pending')?.due ?? '9999-12-31';
   const sorters = {
     updated: (a, b) => b.updatedAt.localeCompare(a.updatedAt),
@@ -302,7 +302,7 @@ function applyQuery(notes) {
     old: (a, b) => a.createdAt.localeCompare(b.createdAt),
     title: (a, b) => displayTitle(a).localeCompare(displayTitle(b), 'ja'),
   };
-  return [...items].sort(sorters[state.sort] || sorters.updated);
+  return { items: [...items].sort(sorters[state.sort] || sorters.updated), query };
 }
 
 export { state as notesState };

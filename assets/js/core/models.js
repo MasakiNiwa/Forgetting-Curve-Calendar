@@ -5,6 +5,7 @@
 import { SCHEMA_VERSION, APP_VERSION } from './config.js';
 import { isValidKey, todayKey } from './date.js';
 import { MAX_SHIELDS, createStreak, pruneDays } from './missions.js';
+import { markdownToPlain } from './markdown.js';
 import {
   DEFAULT_PRESET_ID, DEFAULT_SPREAD_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, getSpread,
   localDayOf, randomSeed, refreshNote, resolveIntervals, sanitizeIntervals, sanitizeSeed,
@@ -34,6 +35,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showCreatedOnCalendar: true,
   defaultExportFormat: 'markdown',
   missionsEnabled: true,      // デイリーミッション（毎日の小さな目標）
+  markdown: true,             // 本文を Markdown として表示する（編集は素の文字のまま）
 });
 
 /** 墓標（削除済みメモの id -> 削除時刻）。古すぎるものは捨てる。 */
@@ -204,7 +206,8 @@ export function displayTitle(note) {
   if (note.title) return note.title;
   const firstLine = (note.body || '').split('\n').find((l) => l.trim());
   if (!firstLine) return '(無題のメモ)';
-  const trimmed = firstLine.trim();
+  // 「# 見出し」のような書き方は、記号を外して見せる
+  const trimmed = markdownToPlain(firstLine).trim() || firstLine.trim();
   return trimmed.length > TITLE_MAX ? `${trimmed.slice(0, TITLE_MAX)}…` : trimmed;
 }
 
@@ -254,6 +257,7 @@ export function normalizeSettings(raw) {
   s.hideBodyUntilRecall = s.hideBodyUntilRecall !== false;
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
   s.missionsEnabled = s.missionsEnabled !== false;
+  s.markdown = s.markdown !== false;
   s.customIntervals = sanitizeIntervals(s.customIntervals);
   s.spreadId = getSpread(s.spreadId).id;
   const limit = Number(s.overdueDailyLimit);
@@ -338,6 +342,42 @@ export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
   };
 
   return refreshNote(note, { adaptive: settings.adaptive !== false });
+}
+
+/**
+ * 保存する形に絞る。
+ *
+ * 復習の予定（reviews）や schedule は、出来事（events）と起点（origin）から
+ * 毎回組み直している（normalizeNote → refreshNote）。読み込みのときに
+ * 捨てている値を書き出しても、置き場所と読み込みの時間を食うだけなので置かない。
+ *
+ * 「アーカイブしたか」は組み直しでは決まらないので status は残す。
+ */
+export function toStoredNote(note) {
+  const stored = {
+    id: note.id,
+    parentId: note.parentId ?? null,
+    title: note.title || '',
+    cue: note.cue || '',
+    body: note.body || '',
+    tags: note.tags || [],
+    anchorDate: note.anchorDate,
+    createdAt: note.createdAt,
+    updatedAt: note.updatedAt,
+    contentUpdatedAt: note.contentUpdatedAt || note.updatedAt,
+    status: note.status,
+    color: note.color ?? null,
+    origin: note.origin,
+    events: note.events || [],
+  };
+  // 食い違った本文の退避は、あるときだけ持つ
+  if (note.conflicts?.length) stored.conflicts = note.conflicts;
+  return stored;
+}
+
+/** データ全体を保存する形に絞る */
+export function toStoredData(data) {
+  return { ...data, notes: (data.notes || []).map(toStoredNote) };
 }
 
 /** 任意の入力データをアプリが扱える形へ整える */

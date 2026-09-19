@@ -14,7 +14,7 @@ import {
 } from './curve.js';
 import {
   createEmptyData, createNote, createProgress, makeEventId, normalizeActivity, normalizeData,
-  normalizeNote, normalizeSettings, normalizeTags, normalizeTombstones,
+  normalizeNote, normalizeSettings, normalizeTags, normalizeTombstones, toStoredData, toStoredNote,
 } from './models.js';
 import {
   COMPLETE_BONUS, advanceStreak, evaluateMission, getMissionDef, levelInfo, pickMissions,
@@ -184,6 +184,13 @@ export class Store {
     this._verifiedWriter = false;
     if (raw) this._savedStamp = stampsOf(this.data.notes);
     else { this._savedStamp = null; this._dirty.all = true; }
+    // 予定まで書き込まれた古い形（v0.9.0 まで）なら、軽い形へ一度だけ書き直す。
+    // 起動のたびに読み捨てる値を、読み込まずに済むようにするため。
+    if (raw?.notes?.some((n) => n && n.reviews !== undefined)) {
+      this._dirty.all = true;
+      // 最初の描画の邪魔をしないよう、少し待ってから
+      setTimeout(() => this.schedulePersist(), 1500);
+    }
     this.invalidate();
     return this.data;
   }
@@ -336,7 +343,7 @@ export class Store {
           planned.plan.rest = splitData(this.data).rest;
           await this.adapter.saveDelta(planned.plan);
         } else {
-          await this.adapter.save(this.data);
+          await this.adapter.save(toStoredData(this.data));
         }
         this.syncedToken = token;
         this._savedStamp = planned.stamps;
@@ -397,7 +404,7 @@ export class Store {
       this.data.meta.appVersion = APP_VERSION;
       this.data.meta.saveToken = token;
       planned.plan.rest = splitData(this.data).rest;
-      this.adapter.saveSync(this.data, planned.plan);
+      this.adapter.saveSync(toStoredData(this.data), planned.plan);
       this.syncedToken = token;
       if (this.adapter.syncWriteIsDeferred) {
         // 控えは置けたが、本体に入ったかは分からない。
@@ -455,7 +462,7 @@ export class Store {
     const { notes, rest } = splitData(this.data);
     const stamps = stampsOf(notes);
     if (dirty.all || !this._savedStamp) {
-      return { plan: { full: true, notes, removed: [], rest }, stamps, dirty };
+      return { plan: { full: true, notes: notes.map(toStoredNote), removed: [], rest }, stamps, dirty };
     }
     const removed = [];
     const alive = new Set(notes.map((n) => n.id));
@@ -464,7 +471,7 @@ export class Store {
     // 印が変わったメモ（＝中身が動いたメモ）と、出来事から分かったメモを書く
     const changed = notes.filter((n) => dirty.notes.has(n.id)
       || this._savedStamp.get(n.id) !== n.updatedAt);
-    return { plan: { full: false, notes: changed, removed, rest }, stamps, dirty };
+    return { plan: { full: false, notes: changed.map(toStoredNote), removed, rest }, stamps, dirty };
   }
 
   /** 書けなかったぶんを、変更の記録に戻す */
@@ -1394,7 +1401,8 @@ export class Store {
   /* ---------------------------------------------------------- bulk data */
 
   exportData() {
-    return JSON.parse(JSON.stringify(this.data));
+    // 復習の予定は出来事から組み直せるので、控えには入れない（ファイルが小さくなる）
+    return JSON.parse(JSON.stringify(toStoredData(this.data)));
   }
 
   /** バックアップを保存したことを記録する */

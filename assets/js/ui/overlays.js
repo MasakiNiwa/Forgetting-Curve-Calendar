@@ -154,20 +154,62 @@ export function openSheet({ title, content, onClose }) {
  * 下へ払って閉じられるようにする。
  *
  * つまみが「動かせそう」に見えるのに動かないと気持ち悪いので、
- * 見た目どおりに動くようにする。中身をスクロールしている途中では始めない。
+ * 見た目どおりに動くようにする。
+ *
+ * 指の操作はブラウザのスクロールと取り合いになる。先にスクロールが始まると
+ * こちらの操作は打ち切られ（pointercancel）、「たまに閉じない」ことになるので、
+ * 指は touch イベントで受けて、最初のひと動きで
+ * 「スクロール」か「閉じる操作」かを決め、決めたら最後までそのまま扱う。
  */
 function enableSwipeToClose({ sheet, scrim, body, close }) {
+  // これ以上下げたら閉じる。背の高いシートでも遠すぎないように上限を付ける
+  const CLOSE_RATIO = 0.2;
+  const CLOSE_MAX = 120;
+  const FLICK_SPEED = 0.35;  // px/ms（最後のひと払いの速さで見る）
+  const RECENT_MS = 160;     // 速さを見るのは直前のこれだけ
+  const DECIDE_PX = 6;       // どちらの操作か決めるまでの遊び
+
   let startY = 0;
-  let startedAt = 0;
+  let recent = [];           // 直前の動き（速さを測るため）
   let delta = 0;
-  let dragging = false;
+  let dragging = false;      // 指・マウスが触れている
+  let decided = null;        // 'drag' | 'scroll'
   let pointerId = null;
 
   const height = () => sheet.getBoundingClientRect().height || 1;
+  const threshold = () => Math.min(height() * CLOSE_RATIO, CLOSE_MAX);
+
+  /**
+   * ここから始めてよいか。
+   * 中身をスクロールしている途中は、まずスクロールを優先する。
+   * ボタンの上からでも払えるようにして（シートの中身はボタンだらけなので）、
+   * 払ったときだけ、そのあとの click を飲み込む。
+   */
+  const canStart = (target) => {
+    if (target?.closest?.('.sheet__handle')) return true;
+    if (body.scrollTop > 0) return false;
+    // 文字を選んだり書いたりするところは、そちらを優先する
+    return !target?.closest?.('input, textarea, select, [contenteditable]');
+  };
+
+  /** 払ったあとに続く click を 1 回だけ止める（ボタンを押したことにしない） */
+  const swallowClick = (e) => { e.stopPropagation(); e.preventDefault(); };
+  const suppressNextClick = () => {
+    sheet.addEventListener('click', swallowClick, true);
+    setTimeout(() => sheet.removeEventListener('click', swallowClick, true), 400);
+  };
+
+  const begin = (y) => {
+    dragging = true;
+    decided = null;
+    delta = 0;
+    startY = y;
+    recent = [{ y: 0, at: Date.now() }];
+  };
 
   const move = (dy) => {
     delta = Math.max(0, dy);
-    sheet.style.transform = `translateY(${delta}px)`;
+    sheet.style.transform = delta ? `translateY(${delta}px)` : '';
     scrim.style.opacity = String(Math.max(0, 1 - (delta / height()) * 1.2));
   };
 
@@ -178,11 +220,21 @@ function enableSwipeToClose({ sheet, scrim, body, close }) {
     setTimeout(() => { sheet.style.transition = ''; }, 240);
   };
 
+  /**
+   * 最後のひと払いの速さ（px/ms）。
+   * 指を止めてから離したときは「勢いなし」として、動いた距離だけで判断する。
+   */
+  const speedNow = () => {
+    const last = recent[recent.length - 1];
+    if (!last || Date.now() - last.at > RECENT_MS) return 0;
+    const from = recent.find((p) => last.at - p.at <= RECENT_MS) || recent[0];
+    const ms = last.at - from.at;
+    return ms > 0 ? (last.y - from.y) / ms : 0;
+  };
+
   const finish = () => {
-    const elapsed = Date.now() - startedAt || 1;
-    const speed = delta / elapsed;        // px/ms
-    // しっかり引き下げたか、勢いよく払ったら閉じる
-    if (delta > height() * 0.25 || speed > 0.6) {
+    // しっかり引き下げたか、最後に勢いよく払ったら閉じる
+    if (delta > threshold() || speedNow() > FLICK_SPEED) {
       sheet.style.transition = 'transform var(--fcc-dur-short) var(--fcc-ease-standard)';
       sheet.style.transform = `translateY(${height()}px)`;
       scrim.style.opacity = '0';
@@ -192,41 +244,77 @@ function enableSwipeToClose({ sheet, scrim, body, close }) {
     reset();
   };
 
+  /** 動いた量から、閉じる操作かスクロールかを決める */
+  const track = (dy) => {
+    if (decided === 'scroll') return false;
+    let moved = dy;
+    if (!decided) {
+      if (Math.abs(moved) < DECIDE_PX) return false;
+      // 上へ動かし始めたらスクロール。下へ動かし始めたら閉じる操作
+      decided = moved > 0 ? 'drag' : 'scroll';
+      if (decided === 'scroll') return false;
+      // 決めるまでの遊びのぶんを外して、指の動きと段差が出ないようにする
+      startY += DECIDE_PX;
+      moved -= DECIDE_PX;
+    }
+    move(moved);
+    recent.push({ y: delta, at: Date.now() });
+    if (recent.length > 8) recent.shift();
+    return true;
+  };
+
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    const wasDragging = decided === 'drag';
+    decided = null;
+    if (wasDragging) suppressNextClick();
+    if (wasDragging && delta > 0) finish();
+    else if (delta > 0) reset({ animate: false });
+  };
+
+  /* ---- マウス（指は touch イベントで扱うので、ここでは相手にしない） ---- */
   sheet.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch') return;
     if (e.button !== undefined && e.button !== 0) return;
-    // 中身を途中までスクロールしているときは、まずスクロールを優先する
-    const fromHandle = e.target.closest('.sheet__handle');
-    if (!fromHandle && body.scrollTop > 0) return;
-    // 入力中の操作を邪魔しない
-    if (!fromHandle && e.target.closest('input, textarea, select, button, a, [contenteditable]')) return;
-    dragging = true;
+    if (!canStart(e.target)) return;
     pointerId = e.pointerId;
-    startY = e.clientY;
-    startedAt = Date.now();
-    delta = 0;
+    begin(e.clientY);
   });
 
   sheet.addEventListener('pointermove', (e) => {
-    if (!dragging || e.pointerId !== pointerId) return;
-    const dy = e.clientY - startY;
-    if (dy <= 0) { move(0); return; }
-    // 下へ動かし始めたら、スクロールではなく「閉じる操作」として扱う
-    if (dy > 6 && !sheet.hasPointerCapture(pointerId)) sheet.setPointerCapture(pointerId);
-    move(dy);
-    if (delta > 0) e.preventDefault();
+    if (!dragging || e.pointerType === 'touch' || e.pointerId !== pointerId) return;
+    if (track(e.clientY - startY) && !sheet.hasPointerCapture(pointerId)) {
+      sheet.setPointerCapture(pointerId);
+    }
   });
 
-  const end = (e) => {
-    if (!dragging || (e && e.pointerId !== pointerId)) return;
-    dragging = false;
+  const pointerEnd = (e) => {
+    if (e.pointerType === 'touch' || e.pointerId !== pointerId) return;
     if (pointerId !== null && sheet.hasPointerCapture(pointerId)) sheet.releasePointerCapture(pointerId);
     pointerId = null;
-    if (delta > 0) finish();
-    else reset({ animate: false });
+    end();
   };
+  sheet.addEventListener('pointerup', pointerEnd);
+  sheet.addEventListener('pointercancel', pointerEnd);
 
-  sheet.addEventListener('pointerup', end);
-  sheet.addEventListener('pointercancel', end);
+  /* ---- 指 ---- */
+  sheet.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) { end(); return; }
+    if (!canStart(e.target)) return;
+    begin(e.touches[0].clientY);
+  }, { passive: true });
+
+  sheet.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    if (e.touches.length !== 1) { end(); return; }
+    const moved = track(e.touches[0].clientY - startY);
+    // 閉じる操作だと決めたら、ブラウザのスクロールには渡さない
+    if (moved && e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  sheet.addEventListener('touchend', end, { passive: true });
+  sheet.addEventListener('touchcancel', end, { passive: true });
 }
 
 /** 確認ダイアログ */
