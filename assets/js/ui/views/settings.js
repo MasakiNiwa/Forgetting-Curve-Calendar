@@ -57,6 +57,18 @@ export function renderSettings(store) {
       onChange: (v) => store.updateSettings({ showCreatedOnCalendar: v }),
     }),
     h('div', { class: 'divider' }),
+    h('label', { class: 'field', style: { marginBottom: '0' } },
+      h('span', { class: 'field__label' }, 'メモを開いたとき'),
+      h('select', {
+        class: 'select',
+        onChange: (e) => store.updateSettings({ editorMode: e.target.value }),
+      },
+      h('option', { value: 'rich', selected: s.editorMode !== 'source' }, '見たままで編集'),
+      h('option', { value: 'source', selected: s.editorMode === 'source' }, 'ソース（素の文字）で編集')),
+      h('span', { class: 'field__hint' },
+        '見たままでは、押したところだけを直せます（表はマス目で、チェックは押すだけ）。'
+        + '記法で細かく書きたいときは、編集画面の右上からいつでも切り替えられます。')),
+    h('div', { class: 'divider' }),
     switchRow({
       title: 'Markdown として読む',
       desc: '見出し・箇条書き・チェックボックス・引用・コード・表などを、読むときだけ整えて表示します。'

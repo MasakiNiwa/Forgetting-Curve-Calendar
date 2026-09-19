@@ -9,7 +9,7 @@ import { renderStats } from './views/stats.js';
 import { renderSettings } from './views/settings.js';
 import { renderHelp } from './views/help.js';
 import { currentRoute, navigate, parseHash, startRouter } from './router.js';
-import { renderNoteEditor, disposeNoteEditor } from './views/noteEditor.js';
+import { renderNoteEditor, disposeNoteEditor, isEditorShowing } from './views/noteEditor.js';
 import { openBackupSheet, backupLabel } from './backup.js';
 import { missionButton, announceMissions, celebrate } from './missions.js';
 import { APP_NAME, APP_TAGLINE } from '../core/config.js';
@@ -108,6 +108,12 @@ export function mountApp(store, root) {
 
     // メモ編集は全画面（アプリ内の表示領域すべて）を使う
     if (segments[0] === 'note') {
+      // 同じメモをすでに開いているなら、作り直さない。
+      // （重なりを閉じたときなど、URL だけが前の形に戻ることがある）
+      if (isEditorShowing(segments[1], params.get('parent') || null)) {
+        document.documentElement.dataset.mode = 'editor';
+        return;
+      }
       document.documentElement.dataset.mode = 'editor';
       clear(main).appendChild(renderNoteEditor(store, {
         noteId: segments[1],

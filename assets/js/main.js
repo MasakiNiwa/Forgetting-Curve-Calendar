@@ -1,6 +1,7 @@
 /** エントリポイント */
 import { Store } from './core/store.js';
 import { createBestAdapter } from './core/storage.js';
+import { guardExit } from './ui/backstack.js';
 import { mountApp } from './ui/app.js';
 import { applyTheme } from './ui/theme.js';
 import { watchViewport } from './ui/viewport.js';
@@ -9,6 +10,8 @@ import { TabLock } from './core/tabLock.js';
 import { setupTabOwnership } from './ui/tabOwnership.js';
 
 async function boot() {
+  // 最初の画面で「戻る」を押しても、アプリごと閉じないようにする
+  guardExit();
   // 保存先はメモ単位で書ける IndexedDB を優先する（使えなければ localStorage）
   const store = new Store(await createBestAdapter());
   await store.load();

@@ -104,6 +104,11 @@ function renderBlock(block) {
   }
 }
 
+/** かたまり 1 つぶんの見た目（見たままの編集でも使う） */
+export function blockView(block) {
+  return renderBlock(block);
+}
+
 /**
  * Markdown を読んで、その見た目の要素を返す。
  * @param {string} text

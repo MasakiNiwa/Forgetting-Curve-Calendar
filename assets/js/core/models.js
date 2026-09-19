@@ -35,7 +35,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showCreatedOnCalendar: true,
   defaultExportFormat: 'markdown',
   missionsEnabled: true,      // デイリーミッション（毎日の小さな目標）
-  markdown: true,             // 本文を Markdown として表示する（編集は素の文字のまま）
+  markdown: true,             // 本文を Markdown として表示する
+  editorMode: 'rich',         // メモを開いたときの編集のしかた（rich=見たまま / source=素の文字）
 });
 
 /** 墓標（削除済みメモの id -> 削除時刻）。古すぎるものは捨てる。 */
@@ -258,6 +259,7 @@ export function normalizeSettings(raw) {
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
   s.missionsEnabled = s.missionsEnabled !== false;
   s.markdown = s.markdown !== false;
+  s.editorMode = s.editorMode === 'source' ? 'source' : 'rich';
   s.customIntervals = sanitizeIntervals(s.customIntervals);
   s.spreadId = getSpread(s.spreadId).id;
   const limit = Number(s.overdueDailyLimit);
