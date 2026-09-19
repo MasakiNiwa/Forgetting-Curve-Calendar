@@ -4,23 +4,26 @@
  * 画面の大部分を本文に使い、操作はツールバー・ショートカットバー・
  * ステータスバーに寄せる。復習の設定は「メモ情報」パネルへ分ける。
  * 本文の保存と復習予定の変更は、はっきり分けて扱う。
+ *
+ * 本文は 1 枚の編集面だけ（v0.12 から、記号を書く画面は無くした）。
+ * 見たまま書いて、そのまま残る。中身は文書データ（JSON）で持つ。
  */
 import { h, append, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { openSheet, openMenu, openDialog, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
-import { branchTree, curvePreview, reviewTimeline, tagChips } from '../components.js';
-import { createRichEditor } from '../../editor/richText.js';
+import { branchTree, curvePreview, reviewTimeline } from '../components.js';
+import { createDocEditor } from '../../editor/docEditor.js';
+import { createPlainSurface } from '../../editor/plainFallback.js';
 import { navigate, replacePath } from '../router.js';
 import { focusNote } from './notes.js';
-import { TextEditor } from '../../editor/textEditor.js';
-import { EditHistory } from '../../editor/history.js';
 import {
   PRESETS, SPREADS, baseIntervalsOf, getPreset, getSpread, randomSeed, resolveIntervals,
   sanitizeIntervals, spreadIdOf, spreadIntervals,
 } from '../../core/curve.js';
 import { displayTitle } from '../../core/models.js';
 import { APP_NAME } from '../../core/config.js';
+import { markdownToDoc, normalizeDoc } from '../../core/doc.js';
 import { clearDraft, draftKey, isEmptyDraft, loadDraft, saveDraft } from '../../core/drafts.js';
 import {
   addDays, formatDateTime, formatDuration, formatLong, formatRelative, formatSmart, todayKey,
@@ -28,31 +31,6 @@ import {
 
 /** メモごとのカーソル位置とスクロール位置を覚えておく */
 const positions = new Map();
-
-/**
- * メモごとの編集履歴。
- * 一覧へ戻ってまた開いても「元に戻す」が続けられるように、この画面を離れても捨てない。
- * （タブを閉じるまで。増えすぎないよう、直近のぶんだけ持つ）
- */
-const histories = new Map();
-const HISTORY_KEEP = 8;
-
-function historyFor(key) {
-  let history = histories.get(key);
-  if (!history) {
-    history = new EditHistory();
-    histories.set(key, history);
-  } else {
-    // 使ったものを新しい側へ回す（古いものから捨てるため）
-    histories.delete(key);
-    histories.set(key, history);
-  }
-  while (histories.size > HISTORY_KEEP) {
-    histories.delete(histories.keys().next().value);
-  }
-  return history;
-}
-
 
 /** 現在開いている編集セッション（画面が切り替わるときに片付ける） */
 let active = null;
@@ -96,6 +74,9 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     id: existing?.id || null,
     title: existing?.title ?? '',
     cue: existing?.cue ?? '',
+    // 本文の正本。まだ文書データを持たない（v0.11 以前の）メモは null
+    doc: existing?.doc ?? null,
+    // 探す・数える・書き出すための写し
     body: existing?.body ?? '',
     tags: (existing?.tags ?? parent?.tags ?? []).join(' '),
     anchorDate: existing?.anchorDate ?? anchorDate ?? todayKey(),
@@ -112,31 +93,38 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     .some((k) => String(draft.value?.[k] ?? '') !== String(state[k] ?? ''));
   const usableDraft = draft && (!isEmptyDraft(draft.value) || (state.id && draftDiffers));
   const restored = Boolean(usableDraft) && draftDiffers;
-  if (usableDraft) Object.assign(state, draft.value);
+  if (usableDraft) {
+    Object.assign(state, draft.value);
+    // 控えは書き換えられる置き場所にあるので、形を確かめてから使う
+    state.doc = normalizeDoc(state.doc);
+    state.body = typeof state.body === 'string' ? state.body : '';
+  }
+
+  /**
+   * 編集面に最初に載せる文書データ。
+   *
+   * v0.11 以前のメモは Markdown の文字しか持っていない。開いたときに読み直して
+   * 見たままの形にするが、書き換えるまでは元の文字のまま保存されている
+   * （＝開いただけでは、読み取りの取りこぼしで本文が変わることがない）。
+   */
+  const initialDoc = state.doc || markdownToDoc(state.body);
 
   let saveTimer = null;
   let dirty = false;
-  /** 'rich'（見たまま）か 'source'（素の文字）か */
-  let mode = 'rich';
-  /** 見たまま側で本文を触ったか（ソースへ移るときに履歴を作り直すため） */
-  let richTouched = false;
-  /** 編集面に読み込んである本文（同じなら読み直さない＝カーソルを飛ばさない） */
-  let richSynced = null;
   /** この編集画面を離れたか（離れたあとに URL を書き換えないため） */
   let disposed = false;
-  let lastError = null;
   /** 入力のたびに進む番号。保存の前後で見比べて「保存中の入力」を取りこぼさない。 */
   let revision = 0;
   /** 保存は必ず 1 本の列に並べる（同時に走らせない） */
   let chain = Promise.resolve({ ok: true });
-  /** 直前の本文の長さ（高さの測り直しを減らすために覚えておく） */
-  let lastLength = -1;
-  /** カーソル位置を測るための影 */
-  let mirror = null;
   /** ステータスバーの更新待ち */
   let statsTimer = null;
   /** 書きかけの控えの書き出し待ち */
   let draftTimer = null;
+  /** 本文の編集面（読み込みが終わるまで null） */
+  let surface = null;
+  /** state.doc / state.body が、いまの編集面と一致しているか */
+  let synced = true;
 
   /* ---------------------------------------------------------- 画面 */
 
@@ -183,44 +171,15 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     h('span', { class: 'ed__cue-icon', html: icon('target', { size: 16 }) }),
     cueInput);
 
-  const textarea = h('textarea', {
-    class: 'ed__body',
-    placeholder: '書き始めてください。',
-    spellcheck: 'false',
-    'aria-label': '本文',
-    onKeyDown: (e) => {
-      // 本文の先頭で ↑ を押したら、手掛かり・タイトルへ戻れる
-      if (e.key === 'ArrowUp' && textarea.selectionStart === 0 && textarea.selectionEnd === 0) {
-        e.preventDefault();
-        cueInput.focus();
-      }
-    },
-  });
-  textarea.value = state.body;
+  /** 編集面の置き場所。道具が載るまでは、書いてあった文字をそのまま見せる */
+  const mount = h('div', { class: 'ed__mount' });
+  const loading = h('div', { class: 'rt ed__loading' }, state.body || '');
+  const rich = h('div', { class: 'ed__rich' }, loading, mount);
 
   // タイトル・手掛かり・本文は 1 枚の紙として一緒にスクロールする
   const docInner = h('div', { class: 'ed__doc-inner' },
     h('div', { class: 'ed__head' }, titleInput, cueRow, cueHint),
-    textarea);
-  /**
-   * 本文の編集面（ふだんはこちら）。
-   * 打ち込みはブラウザに任せ、変わったときだけ Markdown に戻して受け取る。
-   */
-  const richEditor = createRichEditor({
-    onChange: (next) => {
-      if (next === state.body) return;
-      state.body = next;
-      richTouched = true;
-      richSynced = next;
-      // ソース側とも食い違わないようにしておく（文字数・見出し・検索が同じものを見る）
-      textarea.value = next;
-      markDirty();
-      updateStats();
-    },
-    onSelectionChange: () => updateRichButtons(),
-  });
-  const rich = h('div', { class: 'ed__rich', hidden: true }, richEditor.element);
-  docInner.appendChild(rich);
+    rich);
   const doc = h('div', { class: 'ed__doc' }, docInner);
 
   const statusText = h('span', { class: 'ed__status-text' });
@@ -230,34 +189,28 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     title: '文字数の詳細',
     onClick: () => openCountSheet(),
   });
-  const statusCaret = h('span', { class: 'ed__status-caret' });
 
-  const modeBtn = iconButton(icon('data'), {
-    label: 'ソースで編集',
-    onClick: () => setMode(mode === 'rich' ? 'source' : 'rich'),
-  });
   const undoBtn = iconButton(icon('undo'), {
     label: '元に戻す',
-    onClick: () => (mode === 'rich' ? richEditor.commands.undo() : editor.run('undo')),
+    onClick: () => run((s) => s.commands.undo()),
   });
   const redoBtn = iconButton(icon('redo'), {
     label: 'やり直す',
-    onClick: () => (mode === 'rich' ? richEditor.commands.redo() : editor.run('redo')),
+    onClick: () => run((s) => s.commands.redo()),
   });
 
   const findBar = h('div', { class: 'ed__find', hidden: true });
   const shortcutBar = h('div', { class: 'ed__shortcuts' });
 
-  const editorEl = h('div', { class: 'ed' },
+  const editorEl = h('div', { class: 'ed', dataset: { loading: 'true' } },
     h('header', { class: 'ed__toolbar' },
       iconButton(icon('back'), { label: '一覧へ戻る', onClick: () => leave() }),
       h('div', { class: 'ed__toolbar-gap' }),
       undoBtn,
       redoBtn,
-      modeBtn,
       iconButton(icon('list'), { label: '見出しへ移動', onClick: () => openOutline() }),
       iconButton(icon('search'), { label: 'メモ内を検索', onClick: () => toggleFind() }),
-      iconButton(icon('text'), { label: '表示設定', onClick: () => openDisplaySettings(store) }),
+      iconButton(icon('text'), { label: '表示設定', onClick: () => openDisplaySettings() }),
       iconButton(icon('info'), { label: 'メモ情報', onClick: () => openInfoPanel() }),
       iconButton(icon('more'), { label: 'その他', onClick: () => openEditorMenu() })),
     restored ? h('div', { class: 'banner banner--info ed__banner' },
@@ -267,12 +220,15 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         className: 'btn btn--text btn--sm',
         onClick: (e) => {
           clearDraft(key);
+          state.doc = existing?.doc ?? null;
           state.body = existing?.body ?? '';
           state.title = existing?.title ?? '';
           state.cue = existing?.cue ?? '';
-          editor.load(state.body);
+          surface?.setDoc(state.doc || markdownToDoc(state.body));
           titleInput.value = state.title;
           cueInput.value = state.cue;
+          synced = true;
+          updateStats({ immediate: true });
           e.target.closest('.ed__banner').remove();
         },
       })) : null,
@@ -283,116 +239,101 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     findBar,
     doc,
     shortcutBar,
-    h('footer', { class: 'ed__status' }, statusText, h('span', { style: { flex: '1' } }), statusCaret, statusCount));
+    h('footer', { class: 'ed__status' }, statusText, h('span', { style: { flex: '1' } }), statusCount));
 
-  /* ---------------------------------------------------------- エディタ */
+  /* ---------------------------------------------------------- 編集面 */
 
-  const editor = new TextEditor(textarea, {
-    onChange: (text, { silent, composing } = {}) => {
-      state.body = text;
-      updateStats();
-      updateHistoryButtons();
-      autoGrow();
-      if (!silent && !composing) markDirty();
-    },
-    onSelectionChange: () => updateStats(),
-    // Esc は、まず検索バーを閉じる。開いていなければ Tab でフォーカスを移せるようにする
-    onEscape: () => {
-      if (findBar.hidden) return false;
-      toggleFind(false);
-      return true;
-    },
-    onTabEscape: () => {
-      setStatus('Tab でツールバーへ移動します', 'warn');
-      setTimeout(() => { if (!dirty) setStatus(state.id ? '保存済み' : '新しいメモ'); }, 2500);
-    },
-  }, {
-    // 同じメモを開き直したら、さっきまでの「元に戻す」を続けられるようにする
-    history: historyFor(key),
+  /** 編集面があるときだけ動かす（読み込み中の空振りを黙って捨てる） */
+  function run(fn) {
+    if (!surface) return;
+    fn(surface);
+    updateButtons();
+  }
+
+  /** 編集面の中身を state に写す（保存・文字数・控えの前に呼ぶ） */
+  function syncState() {
+    if (synced || !surface) return;
+    state.doc = surface.getDoc();
+    state.body = surface.getText();
+    synced = true;
+  }
+
+  function onSurfaceChange() {
+    synced = false;
+    markDirty();
+    updateStats();
+  }
+
+  function attachSurface(next) {
+    surface = next;
+    loading.remove();
+    editorEl.dataset.loading = '';
+    applyDisplaySettings(editorEl);
+    applyReadOnly();
+    buildShortcuts();
+    updateStats({ immediate: true });
+    updateButtons();
+    restorePosition();
+  }
+
+  createDocEditor(mount, {
+    doc: initialDoc,
+    editable: !store.readOnly,
+    placeholder: '書き始めてください。',
+    onChange: onSurfaceChange,
+    onSelectionChange: () => { updateButtons(); updateStats(); },
+  }).then((next) => {
+    if (disposed) { next.destroy(); return; }
+    attachSurface(next);
+  }).catch((error) => {
+    console.warn('[fcc] 本文の編集の道具を読み込めませんでした', error);
+    if (disposed) return;
+    // 書けないままにしない。ふつうの入力欄として続けられるようにする
+    attachSurface(createPlainSurface(mount, {
+      doc: initialDoc,
+      editable: !store.readOnly,
+      placeholder: '書き始めてください。',
+      onChange: onSurfaceChange,
+      onSelectionChange: () => updateStats(),
+    }));
+    setStatus('見たままの編集は読み込めませんでした（文字だけで書けます）', 'warn');
   });
 
   buildShortcuts();
   updateStats({ immediate: true });
-  updateHistoryButtons();
-  autoGrow();
-  // 前に使っていた方（見たまま／ソース）で開く
-  setMode(store.settings.editorMode === 'source' ? 'source' : 'rich', { remember: false });
   updateDocumentTitle();
   setStatus(existing ? '保存済み' : '新しいメモ');
 
   // 書きかけを復元したときは、本体にはまだ入っていない。未保存として保存を始める
   if (restored) setTimeout(() => markDirty(), 0);
 
-  // 見るだけのタブでは、書けないことがすぐ分かるようにする
-  if (store.readOnly) {
-    textarea.readOnly = true;
-    titleInput.readOnly = true;
-    cueInput.readOnly = true;
-    setStatus('別のタブで編集中（このタブは見るだけ）', 'warn');
-  }
-
-  /* ------------------------------------------------- 1 枚の紙として扱う */
-
   /**
-   * 本文の高さを中身に合わせて伸ばす。
-   * 本文の中だけをスクロールさせず、タイトル・手掛かりと一緒に動かすため。
-   *
-   * 長いメモでも重くならないよう、増えているあいだは測り直さず、
-   * はみ出した分だけ足す（減ったときと画面が変わったときだけ測り直す）。
+   * 見るだけのタブでは、書けないことがすぐ分かるようにする。
+   * 書ける／見るだけは途中でも入れ替わる（別のタブへ譲ったとき）ので、
+   * そのたびに映し直す。
    */
-  function autoGrow({ force = false } = {}) {
-    const head = docInner.querySelector('.ed__head');
-    const min = Math.max(240, doc.clientHeight - (head?.offsetHeight || 0) - 64);
-    const length = textarea.value.length;
-    const grew = length >= lastLength;
-    lastLength = length;
+  function applyReadOnly() {
+    const viewer = Boolean(store.readOnly);
+    titleInput.readOnly = viewer;
+    cueInput.readOnly = viewer;
+    surface?.setEditable(!viewer);
+    if (viewer) setStatus('別のタブで編集中（このタブは見るだけ）', 'warn');
+    else if (!dirty) setStatus(state.id ? '保存済み' : '新しいメモ');
+  }
+  applyReadOnly();
 
-    if (!force && grew && textarea.style.height) {
-      if (textarea.scrollHeight > textarea.clientHeight) {
-        textarea.style.height = `${Math.max(textarea.scrollHeight, min)}px`;
-      }
-      return;
-    }
-    textarea.style.height = 'auto';
-    textarea.style.height = `${Math.max(textarea.scrollHeight, min)}px`;
+  const offTabMode = store.subscribe((event) => {
+    if (event?.type === 'tab:mode') applyReadOnly();
+  });
+
+  /** 書いているところが隠れないように、必要なときだけスクロールする */
+  function scrollCaret() {
+    surface?.scrollCaret?.();
   }
 
-  /** カーソルの位置（本文の先頭からの高さ）を測る */
-  function caretOffsetTop() {
-    if (!mirror) {
-      mirror = h('div', { 'aria-hidden': 'true', class: 'ed__mirror' });
-      document.body.appendChild(mirror);
-    }
-    const cs = window.getComputedStyle(textarea);
-    [
-      'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
-      'whiteSpace', 'wordBreak', 'paddingTop', 'paddingLeft', 'paddingRight', 'textIndent',
-    ].forEach((key) => { mirror.style[key] = cs[key]; });
-    mirror.style.width = `${textarea.clientWidth}px`;
-    const upto = textarea.value.slice(0, textarea.selectionStart);
-    mirror.textContent = upto;
-    const marker = h('span', {}, '\u200b');
-    mirror.appendChild(marker);
-    return marker.offsetTop;
-  }
-
-  /** 書いている行が隠れないように、必要なときだけスクロールする */
-  function scrollCaretIntoView({ margin = 56 } = {}) {
-    if (document.activeElement !== textarea) return;
-    const docRect = doc.getBoundingClientRect();
-    const caretY = textarea.getBoundingClientRect().top + caretOffsetTop();
-    const lineH = parseFloat(window.getComputedStyle(textarea).lineHeight) || 24;
-    if (caretY < docRect.top + margin) {
-      doc.scrollTop -= (docRect.top + margin) - caretY;
-    } else if (caretY + lineH > docRect.bottom - margin) {
-      doc.scrollTop += (caretY + lineH) - (docRect.bottom - margin);
-    }
-  }
-
-  /** 表示設定や画面サイズが変わったときに、レイアウトを整え直す */
+  /** 表示設定や画面サイズが変わったときに、整え直す */
   function refreshLayout() {
-    autoGrow({ force: true });
-    scrollCaretIntoView();
+    scrollCaret();
   }
 
   const onWindowResize = () => refreshLayout();
@@ -403,6 +344,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   function markDirty() {
     dirty = true;
     revision += 1;
+    syncState();
     updateDocumentTitle();
     setStatus('未保存');
     scheduleDraft();
@@ -424,6 +366,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     clearTimeout(draftTimer);
     draftTimer = null;
     if (!dirty) return;
+    syncState();
     if (state.id || !isEmptyDraft(state)) {
       // 既存メモは空にした状態も下書きに残す（古い本文が復活しないように）
       const ok = saveDraft(key, state);
@@ -444,6 +387,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   async function doSave({ immediate = false } = {}) {
     clearTimeout(saveTimer);
+    syncState();
     if (!dirty && state.id) return { ok: true };
     if (isEmptyDraft(state) && !state.id) {
       // 空のまま閉じても、不要なメモを作らない
@@ -459,6 +403,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       store.updateNote(state.id, {
         title: state.title,
         cue: state.cue,
+        doc: state.doc,
         body: state.body,
         tags: state.tags,
       });
@@ -467,6 +412,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       const created = store.addNote({
         title: state.title,
         cue: state.cue,
+        doc: state.doc,
         body: state.body,
         tags: state.tags,
         anchorDate: state.anchorDate,
@@ -478,8 +424,6 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       });
       state.id = created.id;
       lastCreated = { id: created.id, parentId: parentId || null };
-      // 「新規」の履歴を、そのままこのメモの履歴として引き継ぐ
-      histories.set(draftKey({ noteId: created.id }), editor.history);
       // すでに画面を離れていたら URL は触らない（戻った先から引き戻さない）
       if (!disposed) replacePath(['note', created.id], { from: returnTo });
     }
@@ -487,13 +431,11 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     const result = await store.flush();
 
     if (!result.ok) {
-      lastError = result.error;
       setStatus('保存できませんでした', 'error');
       showSaveError();
       return result;
     }
 
-    lastError = null;
     if (rev === revision) {
       // 保存中に書き足されていなければ、これで最新が残っている
       dirty = false;
@@ -526,6 +468,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         className: 'btn btn--text btn--sm',
         onClick: async () => {
           const { copyText } = await import('../../core/exporter.js');
+          syncState();
           const ok = await copyText(state.body);
           toast(ok ? 'コピーしました' : 'コピーできませんでした');
         },
@@ -533,66 +476,28 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     editorEl.querySelector('.ed__doc').insertAdjacentElement('beforebegin', box);
   }
 
-  /**
-   * 「見たまま」と「ソース」の切り替え。
-   *
-   * ふだんは見たままで書き、記法でしか書けないところだけソースで直す。
-   * どちらで書いても、本文は同じ素の Markdown のまま。
-   */
-  function setMode(next, { remember = true } = {}) {
-    mode = next === 'source' ? 'source' : 'rich';
-    if (mode === 'rich') {
-      // 中身が変わっていないときは読み直さない（カーソルを飛ばさないため）
-      if (richSynced !== state.body) { richEditor.load(state.body); richSynced = state.body; }
-      rich.hidden = false;
-      textarea.hidden = true;
-      modeBtn.setAttribute('aria-label', 'ソースで編集');
-      modeBtn.setAttribute('title', 'ソースで編集');
-      modeBtn.innerHTML = icon('data');
-    } else {
-      rich.hidden = true;
-      textarea.hidden = false;
-      modeBtn.setAttribute('aria-label', '見たままで編集');
-      modeBtn.setAttribute('title', '見たままで編集');
-      modeBtn.innerHTML = icon('eye');
-      // 見たままで触っていたら、そこまでを 1 つの区切りにして履歴を作り直す
-      if (richTouched) { editor.load(state.body); richTouched = false; }
-      refreshLayout();
-    }
-    // 下のバーは、いまの編集面で使えるものに入れ替える
-    buildShortcuts();
-    shortcutBar.hidden = false;
-    updateHistoryButtons();
-    setStatus(statusLabel());
-    if (remember && store.settings.editorMode !== mode) {
-      store.updateSettings({ editorMode: mode });
-    }
-  }
-
-  /** いま出ている編集面へカーソルを移す */
+  /** 本文へカーソルを移す */
   function focusBody() {
-    if (mode === 'rich') richEditor.focus();
-    else editor.focus({ start: 0, end: 0 });
+    surface?.focus();
   }
 
-  /** 書式のボタンに、いまの状態を映す */
-  function updateRichButtons() {
-    if (mode !== 'rich') return;
-    const st = richEditor.state();
+  /** ツールバーとショートカットバーに、いまの状態を映す */
+  function updateButtons() {
+    const st = surface?.state();
+    undoBtn.disabled = !st?.canUndo;
+    redoBtn.disabled = !st?.canRedo;
+    if (!st) return;
     shortcutBar.querySelectorAll('[data-rich]').forEach((btn) => {
-      const key = btn.dataset.rich;
-      const on = (key === 'bold' && st.bold)
-        || (key === 'italic' && st.italic)
-        || (key === 'heading' && /^h[1-6]$/.test(st.block))
-        || (key === 'bullet' && st.inList)
-        || (key === 'quote' && st.block === 'blockquote');
+      const name = btn.dataset.rich;
+      const on = (name === 'bold' && st.bold)
+        || (name === 'italic' && st.italic)
+        || (name === 'heading' && st.heading > 0)
+        || (name === 'bullet' && st.bullet)
+        || (name === 'check' && st.task)
+        || (name === 'quote' && st.quote)
+        || (name === 'table' && st.inTable);
       btn.classList.toggle('ed__shortcut--on', Boolean(on));
     });
-  }
-
-  function statusLabel() {
-    if (dirty) return '未保存';
-    return state.id ? '保存済み' : '新しいメモ';
   }
 
   /** タブのタイトルを、いま書いているメモに合わせる */
@@ -613,45 +518,23 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
    */
   function updateStats({ immediate = false } = {}) {
     if (statsTimer) return;
-    const run = () => {
+    const compute = () => {
       statsTimer = null;
-      if (mode === 'rich') {
-        // 見たままのときは、カーソルの位置という考え方が無いので文字数だけ
-        const text = state.body;
-        const lines = text ? text.split('\n').length : 0;
-        statusCount.textContent = `${text.length} 字・${lines} 行`;
-        statusCaret.textContent = '';
-        return;
-      }
-      const stats = editor.quickStats();
+      syncState();
+      const stats = surface?.stats() || { chars: state.body.length, lines: 0, selected: 0 };
       statusCount.textContent = stats.selected
         ? `${stats.selected} 字を選択 / ${stats.chars} 字`
         : `${stats.chars} 字・${stats.lines} 行`;
-      const { line, column } = editor.caretPosition();
-      statusCaret.textContent = `${line}:${column}`;
     };
-    if (immediate) { run(); return; }
-    statsTimer = setTimeout(run, 150);
-  }
-
-  function updateHistoryButtons() {
-    if (mode === 'rich') {
-      // 見たままの編集は、ブラウザの「元に戻す」に載せている（いつでも押せる）
-      undoBtn.disabled = false;
-      redoBtn.disabled = false;
-      return;
-    }
-    undoBtn.disabled = !editor.history.canUndo;
-    redoBtn.disabled = !editor.history.canRedo;
+    if (immediate) { compute(); return; }
+    statsTimer = setTimeout(compute, 150);
   }
 
   /* ---------------------------------------------------------- 検索置換 */
 
-  let findState = { query: '', replacement: '', index: 0 };
+  let findState = { query: '', replacement: '' };
 
   function toggleFind(force) {
-    // 検索や置換は、素の文字の上で動かす
-    if (mode === 'rich' && (force ?? findBar.hidden)) setMode('source');
     const show = force ?? findBar.hidden;
     findBar.hidden = !show;
     if (!show) return;
@@ -661,10 +544,10 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       type: 'search',
       placeholder: '検索',
       value: findState.query,
-      onInput: (e) => { findState.query = e.target.value; findState.index = 0; },
+      onInput: (e) => { findState.query = e.target.value; },
       onKeyDown: (e) => {
         if (e.key === 'Enter') { e.preventDefault(); findNext(); }
-        if (e.key === 'Escape') { e.preventDefault(); toggleFind(false); editor.focus(); }
+        if (e.key === 'Escape') { e.preventDefault(); toggleFind(false); focusBody(); }
       },
     });
     const replaceInput = h('input', {
@@ -686,66 +569,38 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   }
 
   function findNext() {
-    const { query } = findState;
-    if (!query) return;
-    const text = editor.text;
-    const from = editor.selection.end;
-    let at = text.indexOf(query, from);
-    if (at === -1) at = text.indexOf(query, 0);
-    if (at === -1) { toast('見つかりませんでした'); return; }
-    editor.focus({ start: at, end: at + query.length });
+    if (!surface || !findState.query) return;
+    const found = surface.findNext(findState.query);
+    if (!found) { toast('見つかりませんでした'); return; }
     updateStats();
-    requestAnimationFrame(() => scrollCaretIntoView({ margin: 100 }));
   }
 
   function replaceCurrent() {
-    const { query, replacement } = findState;
-    if (!query) return;
-    const { start, end } = editor.selection;
-    if (editor.text.slice(start, end) === query) {
-      editor.replaceRange(start, end, replacement, { select: [start, start + replacement.length] });
-    }
+    if (!surface || !findState.query) return;
+    if (surface.replaceCurrent(findState.query, findState.replacement)) onSurfaceChange();
     findNext();
   }
 
   function replaceAll() {
-    const { query, replacement } = findState;
-    if (!query) return;
-    const text = editor.text;
-    if (!text.includes(query)) { toast('見つかりませんでした'); return; }
-    const count = text.split(query).length - 1;
-    // 一括置換も 1 回で元に戻せる
-    editor.setText(text.split(query).join(replacement), { kind: 'replaceAll' });
+    if (!surface || !findState.query) return;
+    const count = surface.replaceAll(findState.query, findState.replacement);
+    if (!count) { toast('見つかりませんでした'); return; }
+    onSurfaceChange();
     toast(`${count} か所を置き換えました（元に戻せます）`);
   }
 
   /* ------------------------------------------------- 見出しと文字数 */
 
-  /** 「# 」で始まる行を拾う（長いメモの中を移動するため） */
-  function outline() {
-    const lines = editor.text.split('\n');
-    const items = [];
-    let at = 0;
-    lines.forEach((line) => {
-      const match = line.match(/^(#{1,6})\s+(.+)$/);
-      if (match) items.push({ level: match[1].length, text: match[2].trim(), at });
-      at += line.length + 1;
-    });
-    return items;
-  }
-
   function openOutline() {
-    // 見出しへ移動したら、そのまま直せるようにソースへ
-    if (mode === 'rich') setMode('source');
-    const items = outline();
+    const items = surface?.headings() || [];
     if (!items.length) {
       openMenu({
         title: '見出し',
         items: [{
           label: '見出しを作る',
           icon: icon('heading', { size: 20 }),
-          description: '行の先頭に「# 」を付けると、ここから移動できます',
-          onClick: () => { editor.run('heading'); editor.el.focus({ preventScroll: true }); },
+          description: '下のバーの「見出し」で、いまの行を見出しにできます',
+          onClick: () => run((s) => s.commands.heading(2)),
         }],
       });
       return;
@@ -753,19 +608,18 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     openMenu({
       title: '見出しへ移動',
       items: items.map((item) => ({
-        label: `${'　'.repeat(item.level - 1)}${item.text}`,
+        label: `${'　'.repeat(item.level - 1)}${item.text || '（空の見出し）'}`,
         icon: icon('heading', { size: 20 }),
-        onClick: () => {
-          editor.focus({ start: item.at, end: item.at });
-          requestAnimationFrame(() => scrollCaretIntoView({ margin: 120 }));
-        },
+        onClick: () => surface?.goTo(item.pos),
       })),
     });
   }
 
   function openCountSheet() {
-    const text = editor.text;
-    const stats = editor.stats();
+    syncState();
+    const text = state.body;
+    const stats = surface?.stats() || { chars: text.length, lines: 0, selected: 0 };
+    const charsNoSpace = text.replace(/\s/g, '').length;
     const paragraphs = text.split(/\n\s*\n/).filter((p) => p.trim()).length;
     const words = (text.match(/[A-Za-z0-9_'-]+/g) || []).length;
     // 日本語はおよそ 500 字／分で読む目安
@@ -779,7 +633,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       content: h('div', {},
         h('h2', { class: 'daypanel__date', style: { marginBottom: '8px' } }, '文字数'),
         row('文字数', `${stats.chars} 字`),
-        row('空白を除く', `${stats.charsNoSpace} 字`),
+        row('空白を除く', `${charsNoSpace} 字`),
         row('行', `${stats.lines} 行`),
         row('段落', `${paragraphs} 段落`),
         words ? row('英単語', `${words} 語`) : null,
@@ -792,30 +646,29 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   /* ---------------------------------------------------------- ボタン類 */
 
+  /** 下のバー。よく使う書き方だけを並べる */
   function buildShortcuts() {
-    if (mode === 'rich') { buildRichShortcuts(); return; }
     const items = [
-      { id: 'heading', label: '見出し' },
-      { id: 'bullet', label: 'リスト' },
-      { id: 'checkbox', label: 'チェック' },
-      { id: 'toggleCheck', label: '完了' },
-      { id: 'indent', label: '字下げ' },
-      { id: 'outdent', label: '戻す' },
-      { id: 'timestamp', label: '日時' },
+      { id: 'heading', label: '見出し', icon: 'heading', run: (s) => s.commands.heading(2) },
+      { id: 'bold', label: '太字', icon: 'text', run: (s) => s.commands.bold() },
+      { id: 'bullet', label: 'リスト', icon: 'list', run: (s) => s.commands.bullet() },
+      { id: 'check', label: 'チェック', icon: 'checkbox', run: (s) => s.commands.task() },
+      { id: 'quote', label: '引用', icon: 'note', run: (s) => s.commands.quote() },
+      { id: 'table', label: '表', icon: 'layers', run: (s) => s.commands.table() },
     ];
     clear(shortcutBar);
-    items.forEach(({ id, label }) => {
-      const command = editor.commands.get(id);
+    items.forEach(({ id, label, icon: name, run: fn }) => {
       shortcutBar.appendChild(h('button', {
         type: 'button',
         class: 'ed__shortcut',
-        title: command?.label || label,
-        'aria-label': command?.label || label,
-        // 押してもキーボードが閉じないようにする
+        'data-rich': id,
+        title: label,
+        'aria-label': label,
+        // 押してもキーボードが閉じない・カーソルが外れないようにする
         onMouseDown: (e) => e.preventDefault(),
-        onClick: () => { editor.run(id); editor.el.focus({ preventScroll: true }); },
+        onClick: () => run(fn),
       },
-      h('span', { class: 'ed__shortcut-icon', html: icon(command?.icon || 'text', { size: 20 }) }),
+      h('span', { class: 'ed__shortcut-icon', html: icon(name, { size: 20 }) }),
       h('span', { class: 'ed__shortcut-label' }, label)));
     });
     shortcutBar.appendChild(h('button', {
@@ -830,67 +683,49 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     h('span', { class: 'ed__shortcut-label' }, 'その他')));
   }
 
-  /** 見たままの編集で使う、下のバー */
-  function buildRichShortcuts() {
-    const items = [
-      { id: 'heading', label: '見出し', icon: 'heading', run: () => richEditor.commands.heading(2) },
-      { id: 'bold', label: '太字', icon: 'text', run: () => richEditor.commands.bold() },
-      { id: 'italic', label: '斜体', icon: 'edit', run: () => richEditor.commands.italic() },
-      { id: 'bullet', label: 'リスト', icon: 'list', run: () => richEditor.commands.bullet() },
-      { id: 'check', label: 'チェック', icon: 'checkbox', run: () => richEditor.commands.check() },
-      { id: 'quote', label: '引用', icon: 'note', run: () => richEditor.commands.quote() },
-      { id: 'table', label: '表', icon: 'layers', run: () => richEditor.commands.table() },
-    ];
-    clear(shortcutBar);
-    items.forEach(({ id, label, icon: name, run }) => {
-      shortcutBar.appendChild(h('button', {
-        type: 'button',
-        class: 'ed__shortcut',
-        'data-rich': id,
-        title: label,
-        'aria-label': label,
-        // 押してもキーボードが閉じない・カーソルが外れないようにする
-        onMouseDown: (e) => e.preventDefault(),
-        onClick: () => { run(); updateRichButtons(); },
-      },
-      h('span', { class: 'ed__shortcut-icon', html: icon(name, { size: 20 }) }),
-      h('span', { class: 'ed__shortcut-label' }, label)));
-    });
-    shortcutBar.appendChild(h('button', {
-      type: 'button',
-      class: 'ed__shortcut',
-      title: 'その他の編集',
-      'aria-label': 'その他の編集',
-      onMouseDown: (e) => e.preventDefault(),
-      onClick: () => openRichToolsMenu(),
-    },
-    h('span', { class: 'ed__shortcut-icon', html: icon('more', { size: 20 }) }),
-    h('span', { class: 'ed__shortcut-label' }, 'その他')));
-  }
-
-  function openRichToolsMenu() {
-    const st = richEditor.state();
-    const item = (label, description, name, run) => ({
-      label, description, icon: icon(name, { size: 20 }), onClick: () => { run(); updateRichButtons(); },
+  function openToolsMenu() {
+    const st = surface?.state() || {};
+    const item = (label, description, name, fn) => ({
+      label, description, icon: icon(name, { size: 20 }), onClick: () => run(fn),
     });
     openMenu({
       title: '編集',
       items: [
-        item('大きな見出し', '章の区切りに', 'heading', () => richEditor.commands.heading(1)),
-        item('小さな見出し', '節の区切りに', 'heading', () => richEditor.commands.heading(3)),
-        item('番号つきリスト', '順番のあるものに', 'list', () => richEditor.commands.ordered()),
-        item('打ち消し線', '選んだところに', 'text', () => richEditor.commands.strike()),
-        item('コード（行の中）', '選んだところに', 'data', () => richEditor.commands.code()),
-        item('コードのかたまり', '複数行のコードに', 'data', () => richEditor.commands.codeBlock()),
-        item('区切り線', '話題を分ける', 'filter', () => richEditor.commands.rule()),
-        item('リンク', 'URL を貼る', 'external', () => askLink()),
+        item('大きな見出し', '章の区切りに', 'heading', (s) => s.commands.heading(1)),
+        item('小さな見出し', '節の区切りに', 'heading', (s) => s.commands.heading(3)),
+        item('番号つきリスト', '順番のあるものに', 'list', (s) => s.commands.ordered()),
+        item('斜体', '選んだところに', 'edit', (s) => s.commands.italic()),
+        item('打ち消し線', '選んだところに', 'text', (s) => s.commands.strike()),
+        item('コード（行の中）', '選んだところに', 'data', (s) => s.commands.code()),
+        item('コードのかたまり', '複数行のコードに', 'data', (s) => s.commands.codeBlock()),
+        item('区切り線', '話題を分ける', 'filter', (s) => s.commands.rule()),
+        st.link
+          ? item('リンクを外す', 'ただの文字に戻す', 'external', (s) => s.commands.unlink())
+          : item('リンク', 'URL を貼る', 'external', () => askLink()),
+        item('日時を入れる', 'いまの日付と時刻', 'clock', (s) => s.commands.timestamp(
+          formatDateTime(new Date().toISOString()),
+        )),
         ...(st.inTable ? [
           { divider: true },
-          item('表：行を足す', '', 'plus', () => richEditor.commands.addRow()),
-          item('表：列を足す', '', 'plus', () => richEditor.commands.addColumn()),
-          item('表：行を削除', '', 'trash', () => richEditor.commands.removeRow()),
-          item('表：列を削除', '', 'trash', () => richEditor.commands.removeColumn()),
+          item('表：行を足す', '', 'plus', (s) => s.commands.addRow()),
+          item('表：列を足す', '', 'plus', (s) => s.commands.addColumn()),
+          item('表：行を削除', '', 'trash', (s) => s.commands.removeRow()),
+          item('表：列を削除', '', 'trash', (s) => s.commands.removeColumn()),
+          item('表を削除', '', 'trash', (s) => s.commands.removeTable()),
         ] : []),
+        { divider: true },
+        { label: '検索と置換', icon: icon('replace', { size: 20 }), onClick: () => toggleFind(true) },
+        { label: '見出しへ移動', icon: icon('heading', { size: 20 }), onClick: () => openOutline() },
+        { label: '文字数', icon: icon('data', { size: 20 }), onClick: () => openCountSheet() },
+        {
+          label: '本文をコピー',
+          icon: icon('copy', { size: 20 }),
+          onClick: async () => {
+            const { copyText } = await import('../../core/exporter.js');
+            syncState();
+            toast(await copyText(state.body) ? 'コピーしました' : 'コピーできませんでした');
+          },
+        },
       ],
     });
   }
@@ -907,33 +742,20 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         {
           label: '貼る',
           className: 'btn btn--text',
-          onClick: (close) => { richEditor.commands.link(input.value); close(); },
-        },
-      ],
-    });
-    setTimeout(() => input.focus(), 40);
-  }
-
-  function openToolsMenu() {
-    openMenu({
-      title: '編集',
-      items: [
-        { label: '行を複製', icon: icon('copy', { size: 20 }), onClick: () => editor.run('duplicateLine') },
-        { label: '行を削除', icon: icon('trash', { size: 20 }), onClick: () => editor.run('deleteLine') },
-        { label: '検索と置換', icon: icon('replace', { size: 20 }), onClick: () => toggleFind(true) },
-        { label: '見出しへ移動', icon: icon('heading', { size: 20 }), onClick: () => openOutline() },
-        { label: '文字数', icon: icon('data', { size: 20 }), onClick: () => openCountSheet() },
-        { divider: true },
-        {
-          label: '本文をコピー',
-          icon: icon('copy', { size: 20 }),
-          onClick: async () => {
-            const { copyText } = await import('../../core/exporter.js');
-            toast(await copyText(editor.text) ? 'コピーしました' : 'コピーできませんでした');
+          onClick: (close) => {
+            const url = input.value;
+            close();
+            // 押した時点の選択のまま貼る（ダイアログを閉じてから動かす）
+            setTimeout(() => {
+              const ok = surface?.commands.link(url);
+              if (ok === false) toast('この URL は貼れません');
+              updateButtons();
+            }, 0);
           },
         },
       ],
     });
+    setTimeout(() => input.focus(), 40);
   }
 
   function openEditorMenu() {
@@ -941,7 +763,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     openMenu({
       title: state.title || '（無題のメモ）',
       items: [
-        { label: '表示設定', icon: icon('text', { size: 20 }), description: '文字サイズ・行間・集中モード', onClick: () => openDisplaySettings(store) },
+        { label: '表示設定', icon: icon('text', { size: 20 }), description: '文字サイズ・行間・集中モード', onClick: () => openDisplaySettings() },
         { label: 'メモ情報', icon: icon('info', { size: 20 }), description: 'タグ・復習の設定・復習の記録', onClick: () => openInfoPanel() },
         // メモ帳として使う人が、復習を付けずに書き留められるようにする
         state.presetId === 'none' || note?.status === 'inbox' ? {
@@ -1087,15 +909,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   document.addEventListener('keydown', onKeyDown);
 
   // キーボードが出て領域が縮んだとき、入力中の行を見失わないようにする
-  const onViewportResize = () => {
-    refreshLayout();
-    if (document.activeElement !== textarea) return;
-    const { start, end } = editor.selection;
-    requestAnimationFrame(() => {
-      try { textarea.setSelectionRange(start, end); } catch { /* noop */ }
-      scrollCaretIntoView();
-    });
-  };
+  const onViewportResize = () => { refreshLayout(); };
   window.visualViewport?.addEventListener('resize', onViewportResize);
 
   const onBeforeUnload = (event) => {
@@ -1108,6 +922,27 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   };
   window.addEventListener('beforeunload', onBeforeUnload);
 
+  /** 前に開いたときのカーソル位置・スクロール位置に戻す */
+  function restorePosition() {
+    const saved = state.id ? positions.get(state.id) : null;
+    if (saved) {
+      surface.select(saved.from, saved.to);
+      doc.scrollTop = saved.scroll || 0;
+      return;
+    }
+    if (state.body) {
+      // 続きから書けるように、いちばん後ろへ
+      surface.focus({ end: true });
+      return;
+    }
+    if (!state.title) {
+      // 新しいメモは、まずタイトルから書き始められるようにする
+      titleInput.focus({ preventScroll: true });
+      return;
+    }
+    surface.focus();
+  }
+
   active = {
     dispose() {
       disposed = true;
@@ -1119,16 +954,15 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       window.removeEventListener('beforeunload', onBeforeUnload);
       window.removeEventListener('resize', onWindowResize);
       window.visualViewport?.removeEventListener('resize', onViewportResize);
-      mirror?.remove();
-      mirror = null;
-      if (state.id) {
-        positions.set(state.id, {
-          start: editor.selection.start,
-          end: editor.selection.end,
-          scroll: doc.scrollTop,
-        });
+      offTabMode();
+      if (state.id && surface) {
+        const sel = surface.selection();
+        positions.set(state.id, { from: sel.from, to: sel.to, scroll: doc.scrollTop });
       }
       if (dirty) save();
+      // 道具の後始末（見張りを残さない）
+      surface?.destroy();
+      surface = null;
       active = null;
     },
     /**
@@ -1143,29 +977,9 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     refreshLayout,
   };
 
-  // 前回の続きから書けるようにする
-  setTimeout(() => {
-    applyDisplaySettings(store, textarea);
-    autoGrow();
-    const saved = state.id ? positions.get(state.id) : null;
-    if (saved) {
-      editor.focus({ start: saved.start, end: saved.end });
-      doc.scrollTop = saved.scroll || 0;
-    } else if (state.body) {
-      editor.focus({ start: state.body.length, end: state.body.length });
-      scrollCaretIntoView();
-    } else if (!state.title) {
-      // 新しいメモは、まずタイトルから書き始められるようにする
-      titleInput.focus({ preventScroll: true });
-    } else {
-      editor.focus({ start: 0, end: 0 });
-    }
-  }, 40);
-
   return editorEl;
 }
 
-/** 画面から離れるときに呼ぶ（保存の取りこぼしを防ぐ） */
 /** その行き先のメモを、いま開いているか */
 export function isEditorShowing(noteId, parentId) {
   return Boolean(active?.matches?.(noteId, parentId));
@@ -1373,28 +1187,28 @@ function writeDisplaySettings(value) {
   } catch { /* 保存できなくても表示は変えられる */ }
 }
 
-function applyDisplaySettings(store, textarea) {
+/**
+ * 文字サイズ・行間などを本文の編集面へ映す。
+ * 編集面は 1 枚だけなので、そこにまとめて当てる。
+ */
+function applyDisplaySettings(root) {
+  const el = root || document.querySelector('.ed');
   const d = readDisplaySettings();
-  textarea.style.fontSize = `${d.fontSize}px`;
-  textarea.style.lineHeight = String(d.lineHeight);
-  textarea.style.whiteSpace = d.wrap ? 'pre-wrap' : 'pre';
-  textarea.style.overflowX = d.wrap ? 'hidden' : 'auto';
-  textarea.style.fontFamily = d.mono ? 'var(--fcc-font-mono)' : 'var(--fcc-font)';
-  const root = textarea.closest('.ed');
-  if (root) root.dataset.bare = d.bare ? 'true' : '';
-  // 見たままの側も、同じ文字サイズ・行間で読めるようにする
-  const rich = root?.querySelector('.ed__rich');
+  const rich = el?.querySelector('.ed__rich');
   if (rich) {
     rich.style.fontSize = `${d.fontSize}px`;
     rich.style.lineHeight = String(d.lineHeight);
     rich.style.fontFamily = d.mono ? 'var(--fcc-font-mono)' : 'var(--fcc-font)';
+    rich.style.whiteSpace = d.wrap ? 'pre-wrap' : 'pre';
+    rich.style.overflowX = d.wrap ? 'hidden' : 'auto';
   }
-  // 折り返しや文字サイズが変わると行数も変わるので、高さを組み直す
+  if (el) el.dataset.bare = d.bare ? 'true' : '';
+  // 書いているところが隠れていないか、整え直す
   active?.refreshLayout?.();
 }
 
-function openDisplaySettings(store) {
-  const textarea = document.querySelector('.ed__body');
+function openDisplaySettings() {
+  const root = document.querySelector('.ed');
   const content = h('div', {});
   const render = () => {
     const d = readDisplaySettings();
@@ -1407,7 +1221,7 @@ function openDisplaySettings(store) {
           type: 'button',
           class: 'chip',
           'aria-pressed': String(d.fontSize === size),
-          onClick: () => { patchDisplaySettings({ fontSize: size }); applyDisplaySettings(store, textarea); render(); },
+          onClick: () => { patchDisplaySettings({ fontSize: size }); applyDisplaySettings(root); render(); },
         }, `${size}px`))),
       h('div', { class: 'field__label', style: { marginTop: '14px' } }, '行の間隔'),
       h('div', { class: 'filter-row' },
@@ -1416,7 +1230,7 @@ function openDisplaySettings(store) {
             type: 'button',
             class: 'chip',
             'aria-pressed': String(d.lineHeight === v),
-            onClick: () => { patchDisplaySettings({ lineHeight: v }); applyDisplaySettings(store, textarea); render(); },
+            onClick: () => { patchDisplaySettings({ lineHeight: v }); applyDisplaySettings(root); render(); },
           }, label))),
       h('div', { class: 'divider' }),
       h('label', { class: 'switch' },
@@ -1427,7 +1241,7 @@ function openDisplaySettings(store) {
           h('input', {
             type: 'checkbox',
             checked: d.wrap,
-            onChange: (e) => { patchDisplaySettings({ wrap: e.target.checked }); applyDisplaySettings(store, textarea); },
+            onChange: (e) => { patchDisplaySettings({ wrap: e.target.checked }); applyDisplaySettings(root); },
           }),
           h('span', { class: 'switch__track' }),
           h('span', { class: 'switch__thumb' }))),
@@ -1439,7 +1253,7 @@ function openDisplaySettings(store) {
           h('input', {
             type: 'checkbox',
             checked: d.mono,
-            onChange: (e) => { patchDisplaySettings({ mono: e.target.checked }); applyDisplaySettings(store, textarea); },
+            onChange: (e) => { patchDisplaySettings({ mono: e.target.checked }); applyDisplaySettings(root); },
           }),
           h('span', { class: 'switch__track' }),
           h('span', { class: 'switch__thumb' }))),
@@ -1451,7 +1265,7 @@ function openDisplaySettings(store) {
           h('input', {
             type: 'checkbox',
             checked: d.bare,
-            onChange: (e) => { patchDisplaySettings({ bare: e.target.checked }); applyDisplaySettings(store, textarea); },
+            onChange: (e) => { patchDisplaySettings({ bare: e.target.checked }); applyDisplaySettings(root); },
           }),
           h('span', { class: 'switch__track' }),
           h('span', { class: 'switch__thumb' }))),

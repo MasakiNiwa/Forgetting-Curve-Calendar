@@ -5,6 +5,7 @@
 import { APP_NAME, APP_VERSION } from './config.js';
 import { formatLong, todayKey } from './date.js';
 import { displayTitle } from './models.js';
+import { docToMarkdown } from './doc.js';
 import { RATINGS } from './curve.js';
 
 export const FORMATS = [
@@ -55,8 +56,10 @@ export function toMarkdown(notes, { store } = {}) {
     meta.push(`状態: ${note.status === 'graduated' ? '定着' : note.status === 'archived' ? 'アーカイブ' : '復習中'}`);
     lines.push(`> ${meta.join(' ｜ ')}`);
     lines.push('');
-    if (note.body) {
-      lines.push(note.body);
+    // 文書データのメモは Markdown に書き出す（見出し・表・チェックも残す）
+    const body = note.doc ? docToMarkdown(note.doc) : note.body;
+    if (body) {
+      lines.push(body);
       lines.push('');
     }
     lines.push(`<!-- 復習: ${reviewSummary(note)} -->`);

@@ -11,9 +11,11 @@
 
 ## できること
 
-- ✍️ **全画面のテキストエディタ** — タイトル・手掛かり・本文が 1 枚の紙。境界線なしで一緒にスクロール
+- ✍️ **全画面のリッチエディタ** — 見たまま書けて、書いたものが書いたまま残る。
+  タイトル・手掛かり・本文は 1 枚の紙として一緒にスクロール
 - ◎ **手掛かりが最初から見える** — 復習で最初に出る「問い」を、書くときに必ず目にする位置へ
-- 🔖 **見出しとアウトライン** — 行頭の `# ` で見出し。`Ctrl/⌘+K` でその場所へ移動
+- 🔖 **見出しとアウトライン** — `# ` と打てばその場で見出しに。`Ctrl/⌘+K` でその場所へ移動
+- 📋 **表・チェック・引用** — 下のバーから。表は Tab で次のマス、Enter はマスの中の改行
 - ↩️ **元に戻す / やり直す・検索置換** — 一括置換も 1 回で戻せる。日本語入力にも配慮
 - 💾 **自動保存** — 保存状態が常に見える。失敗したら画面に留まり、再試行と本文のコピーができる
 - ✅ **箇条書きの続き** — Enter で次の記号を補い、空の項目で終わる。空行でボタンを押せばすぐ書ける
@@ -67,9 +69,12 @@
 
 ## 技術構成
 
-- 依存ライブラリなしの **静的サイト**（ES Modules / CSS Custom Properties）
+- ビルド工程のない **静的サイト**（ES Modules / CSS Custom Properties）。
+  依存は本文の編集に使う Tiptap / ProseMirror だけで、それも配布物を同梱している
 - Material Design 3 を参考にしたカラートークンとコンポーネント
-- エディタは「見たまま」と「ソース」の 2 枚。どちらで書いても、保存されるのは素の Markdown
+- 本文は **Tiptap（ProseMirror）** で書き、構造（JSON）のまま保存。記号に読み替えないので
+  「2 * 3」や「C:\temp」がそのまま残る。編集の道具は**編集画面を開いたときだけ**読み込み、
+  読むだけの画面は素の DOM で組む
 - データは `IndexedDB` にメモ 1 件ずつ（使えない環境では `localStorage` へ自動で切り替え）。
   復習の予定は保存せず、出来事から組み直す。
   ストレージ層を抽象化しており、将来の同期実装に差し替え可能
@@ -78,10 +83,11 @@
 index.html
 assets/
   css/    tokens.css / app.css
+  vendor/ tiptap.bundle.js（本文の編集に使う道具。作り方は assets/vendor/README.md）
   js/
     core/  storage / migrations / models / curve / missions / store / exporter … ドメイン（UI 非依存）
     ui/    app / editor / missions / backup / reviewSession / components …
-    editor/  history / textEditor … テキスト編集の中核（UI 非依存）
+    editor/  docEditor / plainFallback … 本文の編集面（道具の載せ替えはここだけ）
     ui/      … charts / reviewSession ほか
     ui/views/  calendar / noteEditor / notes / stats / settings / help
 docs/SPEC.md    仕様書

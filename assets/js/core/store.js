@@ -22,6 +22,7 @@ import {
 } from './missions.js';
 import { drawOmikuji, readOmikuji } from './omikuji.js';
 import { migrate } from './migrations.js';
+import { normalizeDoc } from './doc.js';
 import { createDefaultAdapter, splitData } from './storage.js';
 
 /** 保存をまとめる時間。入力のたびに全部を書き出すと重いので少し待つ。 */
@@ -885,6 +886,14 @@ export class Store {
     };
     if (patch.title !== undefined) setField('title', String(patch.title).trim());
     if (patch.cue !== undefined) setField('cue', String(patch.cue).trim());
+    // 本文の正本は文書データ。中身が同じなら触らない（保存の回数を増やさない）
+    if (patch.doc !== undefined) {
+      const nextDoc = normalizeDoc(patch.doc);
+      if (JSON.stringify(note.doc ?? null) !== JSON.stringify(nextDoc ?? null)) {
+        note.doc = nextDoc;
+        contentChanged = true;
+      }
+    }
     // 本文は前後の空白・改行を勝手に削らない（書いたとおりに残す）
     let charDelta = 0;
     if (patch.body !== undefined) {
