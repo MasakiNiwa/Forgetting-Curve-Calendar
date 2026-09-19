@@ -31,6 +31,26 @@ import { MemoryAdapter } from '../assets/js/core/storage.js';
 import { Store } from '../assets/js/core/store.js';
 
 const settings = { ...DEFAULT_SETTINGS };
+
+/**
+ * 保存先への書き込みを数える。
+ * メモ単位で書ける保存先は saveDelta を使うので、両方をまとめて見る。
+ * plans には「その回に何を書いたか」が入る。
+ */
+const watchWrites = (adapter) => {
+  const counter = { writes: 0, plans: [] };
+  const save = adapter.save.bind(adapter);
+  adapter.save = async (data) => { counter.writes += 1; return save(data); };
+  if (typeof adapter.saveDelta === 'function') {
+    const delta = adapter.saveDelta.bind(adapter);
+    adapter.saveDelta = async (plan) => {
+      counter.writes += 1;
+      counter.plans.push({ full: plan.full, notes: plan.notes.map((n) => n.id), removed: [...plan.removed] });
+      return delta(plan);
+    };
+  }
+  return counter;
+};
 const newStore = async () => {
   const store = new Store(new MemoryAdapter());
   await store.load();
@@ -588,6 +608,7 @@ test('store: 別タブの変更を取り込んでも、どちらのメモも失�
 test('store: 保存の成否が呼び出し側へ返る', async () => {
   const failing = new MemoryAdapter();
   failing.save = async () => { throw new Error('quota'); };
+  failing.saveDelta = async () => { throw new Error('quota'); };
   const store = new Store(failing);
   await store.load();
   store.addNote({ body: '保存できないメモ' });
@@ -1230,28 +1251,26 @@ test('store: 本文の入力はまとめて 1 回、確定の操作はすぐ書�
   const note = store.addNote({ body: 'はじめの本文' });
   await store.flush();
 
-  let writes = 0;
-  const save = store.adapter.save.bind(store.adapter);
-  store.adapter.save = async (data) => { writes += 1; return save(data); };
+  const counter = watchWrites(store.adapter);
 
   // 本文の入力は予約にまとめる
   for (let i = 0; i < 20; i += 1) store.updateNote(note.id, { body: `はじめの本文${'あ'.repeat(i + 1)}` });
-  assert.equal(writes, 0, '予約しただけでは書かない');
+  assert.equal(counter.writes, 0, '予約しただけでは書かない');
 
   const result = await store.flush();
   assert.equal(result.ok, true);
-  assert.equal(writes, 1, '20 回の入力が 1 回の書き込みになる');
+  assert.equal(counter.writes, 1, '20 回の入力が 1 回の書き込みになる');
   assert.equal(store.adapter.data.notes[0].body.endsWith('あ'.repeat(20)), true, '最新が残る');
 
   // 変更が無ければ、もう書かない
   await store.flush();
-  assert.equal(writes, 1);
+  assert.equal(counter.writes, 1);
 
   // 「記録した」はその場で書く（直後に閉じても残るように）
   const review = store.getNote(note.id).reviews.find((r) => r.status === 'pending');
   store.rateReview(note.id, review.id, 'known');
   await store.flush();
-  assert.equal(writes, 2, '想起の記録は予約せずに書く');
+  assert.equal(counter.writes, 2, '想起の記録は予約せずに書く');
   assert.equal(store.adapter.data.notes[0].events.length, 1, '保存先にも記録が入っている');
 });
 
@@ -1274,9 +1293,7 @@ test('store: 見るだけのタブは、ぜったいに書かない', async () =
   store.addNote({ body: '先に入れておくメモ' });
   await store.flush();
 
-  let writes = 0;
-  const save = store.adapter.save.bind(store.adapter);
-  store.adapter.save = async (data) => { writes += 1; return save(data); };
+  const counter = watchWrites(store.adapter);
 
   store.setReadOnly(true);
   store.addNote({ body: '見るだけのタブで書いたメモ' });
@@ -1284,14 +1301,140 @@ test('store: 見るだけのタブは、ぜったいに書かない', async () =
   assert.equal(result.ok, false);
   assert.equal(result.readOnly, true);
   assert.equal(store.flushSync(), false);
-  assert.equal(writes, 0, '1 度も書かない');
+  assert.equal(counter.writes, 0, '1 度も書かない');
   assert.equal(store.adapter.data.notes.length, 1, '保存先は元のまま');
 
   // 編集できるタブに戻したら、また書ける
   store.setReadOnly(false);
   store.addNote({ body: '戻ってから書いたメモ' });
   await store.flush();
-  assert.equal(writes >= 1, true);
+  assert.equal(counter.writes >= 1, true);
+});
+
+/* --------------------------------------------- v0.9: メモ単位の書き出し */
+
+test('store: 1 文字の変更で書き直すのは、そのメモ 1 件だけ', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const a = store.addNote({ body: 'メモ A' });
+  store.addNote({ body: 'メモ B' });
+  store.addNote({ body: 'メモ C' });
+  await store.flush();
+
+  const counter = watchWrites(store.adapter);
+  store.updateNote(a.id, { body: 'メモ Aあ' });
+  await store.flush();
+
+  assert.equal(counter.writes, 1);
+  assert.equal(counter.plans[0].full, false, '全部の書き直しにはならない');
+  assert.deepEqual(counter.plans[0].notes, [a.id], '変わった 1 件だけを書く');
+  assert.equal(store.adapter.data.notes.length, 3, '他のメモはそのまま残っている');
+  assert.equal(store.adapter.data.notes.find((n) => n.id === a.id).body, 'メモ Aあ');
+});
+
+test('store: 消したメモは保存先からも消える', async () => {
+  const adapter = new MemoryAdapter();
+  const store = new Store(adapter);
+  await store.load();
+  const a = store.addNote({ body: '消すメモ' });
+  const b = store.addNote({ body: '残すメモ' });
+  await store.flush();
+
+  const counter = watchWrites(adapter);
+  store.deleteNote(a.id);
+  await store.flush();
+  assert.deepEqual(counter.plans[0].removed, [a.id]);
+
+  const reloaded = new Store(adapter);
+  await reloaded.load();
+  assert.deepEqual(reloaded.notes.map((n) => n.id), [b.id]);
+});
+
+test('store: 予定が変わる設定を触ったら、全メモを書き直す', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  store.addNote({ body: 'メモ 1' });
+  store.addNote({ body: 'メモ 2' });
+  await store.flush();
+
+  const counter = watchWrites(store.adapter);
+  store.updateSettings({ adaptive: !store.settings.adaptive });
+  await store.flush();
+  assert.equal(counter.plans[0].full, true, '全メモの予定を組み直したので全部書く');
+
+  // 見た目だけの設定なら、メモは書かなくてよい
+  const after = watchWrites(store.adapter);
+  store.updateSettings({ theme: 'dark' });
+  await store.flush();
+  assert.equal(after.plans[0].full, false);
+  assert.deepEqual(after.plans[0].notes, [], 'メモは 1 件も書き直さない');
+  assert.equal(store.adapter.data.settings.theme, 'dark', '設定は保存される');
+});
+
+test('store: 書けなかった変更は、次の保存で書き直す', async () => {
+  const adapter = new MemoryAdapter();
+  const store = new Store(adapter);
+  await store.load();
+  const a = store.addNote({ body: '先に保存できるメモ' });
+  await store.flush();
+
+  // いちど失敗させる
+  const delta = adapter.saveDelta.bind(adapter);
+  adapter.saveDelta = async () => { throw new Error('quota'); };
+  store.updateNote(a.id, { body: '失敗する保存' });
+  const failed = await store.flush();
+  assert.equal(failed.ok, false);
+  assert.equal(adapter.data.notes[0].body, '先に保存できるメモ', 'まだ書けていない');
+
+  // 直ったら、書けていなかったぶんも含めて書ける
+  adapter.saveDelta = delta;
+  const counter = watchWrites(adapter);
+  store.updateNote(a.id, { body: '直ってからの保存' });
+  const ok = await store.flush();
+  assert.equal(ok.ok, true);
+  assert.deepEqual(counter.plans[0].notes, [a.id]);
+  assert.equal(adapter.data.notes[0].body, '直ってからの保存');
+});
+
+test('store: 控えしか置けない保存先では、次の保存でもう一度書く', async () => {
+  // IndexedDB のように「閉じる直前は控えを置くだけ」の保存先を模す
+  const adapter = new MemoryAdapter();
+  adapter.syncWriteIsDeferred = true;
+  const journal = [];
+  adapter.saveSync = (data, plan) => { journal.push(plan.notes.map((n) => n.id)); };
+
+  const store = new Store(adapter);
+  await store.load();
+  const a = store.addNote({ body: '1 件目' });
+  const b = store.addNote({ body: '2 件目' });
+  await store.flush();
+
+  store.updateNote(a.id, { body: '閉じる直前の本文' });
+  assert.equal(store.flushSync(), true);
+  assert.deepEqual(journal, [[a.id]], '控えには、そのメモだけが入る');
+
+  // 閉じきらずに続けたときは、次の保存で本体にも書き直す
+  const counter = watchWrites(adapter);
+  store.updateNote(b.id, { body: 'そのあとに書いた本文' });
+  await store.flush();
+  assert.deepEqual(counter.plans[0].notes.sort(), [a.id, b.id].sort(), '控えのぶんも一緒に書く');
+  assert.equal(adapter.data.notes.find((n) => n.id === a.id).body, '閉じる直前の本文');
+});
+
+test('store: 取り込みや読み込みのあとは、全部を書き直す', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  store.addNote({ body: 'もとのメモ' });
+  await store.flush();
+
+  const counter = watchWrites(store.adapter);
+  store.importData({
+    schemaVersion: SCHEMA_VERSION,
+    notes: [{ id: 'imported-1', body: '取り込んだメモ', anchorDate: todayKey(), events: [] }],
+  }, 'replace');
+  await store.flush();
+  assert.equal(counter.plans[0].full, true);
+  assert.deepEqual(store.adapter.data.notes.map((n) => n.id), ['imported-1'], '前のメモは残らない');
 });
 
 test('store: 子メモの数は数え直さずに使い回す', async () => {
@@ -1391,6 +1534,30 @@ test('tabLock: 返事がなくても、しばらく待てば引き継げる', as
   assert.equal(await b.takeOver({ wait: 0, sleep: async () => {} }), true);
   assert.equal(b.owner, true);
   assert.equal(b.currentOwner().id, 'tab_b');
+});
+
+test('store: 書いてよいかの確認は、読み込み後の 1 回だけ（引き継いだら もう一度）', async () => {
+  const adapter = new MemoryAdapter();
+  const store = new Store(adapter);
+  await store.load();
+  let checks = 0;
+  const token = adapter.token.bind(adapter);
+  adapter.token = async () => { checks += 1; return token(); };
+
+  store.addNote({ body: '1 件目' });
+  await store.flush();
+  store.addNote({ body: '2 件目' });
+  await store.flush();
+  store.addNote({ body: '3 件目' });
+  await store.flush();
+  assert.equal(checks, 1, '2 回目以降は確かめ直さない');
+
+  // 見るだけのタブから編集できるタブに戻ったら、もう一度確かめる
+  store.setReadOnly(true);
+  store.setReadOnly(false);
+  store.addNote({ body: '引き継いでから書いたメモ' });
+  await store.flush();
+  assert.equal(checks, 2, '引き継いだ直後は確かめる');
 });
 
 test('store: 読み直しは統合せず、保存されている内容で置き換える', async () => {
