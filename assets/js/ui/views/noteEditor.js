@@ -10,7 +10,7 @@
  */
 import { h, append, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
-import { openSheet, openMenu, openDialog, confirmDialog, toast } from '../overlays.js';
+import { openSheet, openMenu, openDialog, openPopover, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
 import { branchTree, curvePreview, reviewTimeline } from '../components.js';
 import { createDocEditor } from '../../editor/docEditor.js';
@@ -200,6 +200,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   });
 
   const findBar = h('div', { class: 'ed__find', hidden: true });
+  // 表の中にカーソルがあるときだけ出る、行と列の操作
+  const tableBar = h('div', { class: 'ed__tablebar', hidden: true });
   const shortcutBar = h('div', { class: 'ed__shortcuts' });
 
   const editorEl = h('div', { class: 'ed', dataset: { loading: 'true' } },
@@ -208,9 +210,9 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       h('div', { class: 'ed__toolbar-gap' }),
       undoBtn,
       redoBtn,
-      iconButton(icon('list'), { label: '見出しへ移動', onClick: () => openOutline() }),
+      iconButton(icon('notes'), { label: '見出しへ移動', onClick: () => openOutline() }),
       iconButton(icon('search'), { label: 'メモ内を検索', onClick: () => toggleFind() }),
-      iconButton(icon('text'), { label: '表示設定', onClick: () => openDisplaySettings() }),
+      iconButton(icon('format'), { label: '表示設定', onClick: () => openDisplaySettings() }),
       iconButton(icon('info'), { label: 'メモ情報', onClick: () => openInfoPanel() }),
       iconButton(icon('more'), { label: 'その他', onClick: () => openEditorMenu() })),
     restored ? h('div', { class: 'banner banner--info ed__banner' },
@@ -238,6 +240,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       h('span', {}, `「${displayTitle(parent)}」への追加メモ`)) : null,
     findBar,
     doc,
+    tableBar,
     shortcutBar,
     h('footer', { class: 'ed__status' }, statusText, h('span', { style: { flex: '1' } }), statusCount));
 
@@ -487,17 +490,17 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     undoBtn.disabled = !st?.canUndo;
     redoBtn.disabled = !st?.canRedo;
     if (!st) return;
-    shortcutBar.querySelectorAll('[data-rich]').forEach((btn) => {
-      const name = btn.dataset.rich;
-      const on = (name === 'bold' && st.bold)
-        || (name === 'italic' && st.italic)
-        || (name === 'heading' && st.heading > 0)
-        || (name === 'bullet' && st.bullet)
-        || (name === 'check' && st.task)
-        || (name === 'quote' && st.quote)
-        || (name === 'table' && st.inTable);
-      btn.classList.toggle('ed__shortcut--on', Boolean(on));
+    // いまのカーソルに関わりのあるまとまりに、そっと色を置く
+    const on = {
+      heading: st.heading > 0,
+      format: st.bold || st.italic || st.strike || st.code || st.link,
+      list: st.bullet || st.ordered || st.task,
+      insert: st.inTable || st.quote || st.codeBlock,
+    };
+    shortcutBar.querySelectorAll('[data-group]').forEach((btn) => {
+      btn.classList.toggle('ed__shortcut--on', Boolean(on[btn.dataset.group]));
     });
+    tableBar.hidden = !st.inTable;
   }
 
   /** タブのタイトルを、いま書いているメモに合わせる */
@@ -646,74 +649,155 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   /* ---------------------------------------------------------- ボタン類 */
 
-  /** 下のバー。よく使う書き方だけを並べる */
+  /**
+   * 下のバー。
+   *
+   * ボタンを並べきると、どれが何なのか読み取れなくなる。
+   * 近いものを 1 つにまとめ、「まとまりを押す → やりたいことを選ぶ」の 2 手にした。
+   * 開くのは画面を覆うシートではなく、その場の小さなメニュー（カーソルは本文のまま）。
+   */
   function buildShortcuts() {
-    const items = [
-      { id: 'heading', label: '見出し', icon: 'heading', run: (s) => s.commands.heading(2) },
-      { id: 'bold', label: '太字', icon: 'text', run: (s) => s.commands.bold() },
-      { id: 'bullet', label: 'リスト', icon: 'list', run: (s) => s.commands.bullet() },
-      { id: 'check', label: 'チェック', icon: 'checkbox', run: (s) => s.commands.task() },
-      { id: 'quote', label: '引用', icon: 'note', run: (s) => s.commands.quote() },
-      { id: 'table', label: '表', icon: 'layers', run: (s) => s.commands.table() },
+    const groups = [
+      { id: 'heading', label: '見出し', icon: 'heading', open: openHeadingMenu },
+      { id: 'format', label: '文字', icon: 'bold', open: openFormatMenu },
+      { id: 'list', label: 'リスト', icon: 'list', open: openListMenu },
+      { id: 'insert', label: '入れる', icon: 'plus', open: openInsertMenu },
+      { id: 'tools', label: 'その他', icon: 'more', open: openToolsMenu },
     ];
     clear(shortcutBar);
-    items.forEach(({ id, label, icon: name, run: fn }) => {
-      shortcutBar.appendChild(h('button', {
+    groups.forEach(({ id, label, icon: name, open }) => {
+      const btn = h('button', {
         type: 'button',
         class: 'ed__shortcut',
-        'data-rich': id,
+        'data-group': id,
         title: label,
         'aria-label': label,
+        'aria-haspopup': 'menu',
         // 押してもキーボードが閉じない・カーソルが外れないようにする
+        onMouseDown: (e) => e.preventDefault(),
+        onClick: () => open(btn),
+      },
+      h('span', { class: 'ed__shortcut-icon', html: icon(name, { size: 20 }) }),
+      h('span', { class: 'ed__shortcut-label' }, label));
+      shortcutBar.appendChild(btn);
+    });
+    buildTableBar();
+  }
+
+  /** 表の中にいるときだけ出る、行と列の操作 */
+  function buildTableBar() {
+    const items = [
+      { label: '行を足す', icon: 'rowAdd', run: (s) => s.commands.addRow() },
+      { label: '列を足す', icon: 'columnAdd', run: (s) => s.commands.addColumn() },
+      { label: '行を削除', icon: 'rowRemove', run: (s) => s.commands.removeRow() },
+      { label: '列を削除', icon: 'columnRemove', run: (s) => s.commands.removeColumn() },
+      { label: '表を削除', icon: 'tableRemove', run: (s) => s.commands.removeTable(), danger: true },
+    ];
+    clear(tableBar);
+    tableBar.appendChild(h('span', { class: 'ed__tablebar-label', html: icon('table', { size: 18 }) }));
+    items.forEach(({ label, icon: name, run: fn, danger }) => {
+      tableBar.appendChild(h('button', {
+        type: 'button',
+        class: `ed__tablebtn${danger ? ' ed__tablebtn--danger' : ''}`,
+        title: label,
+        'aria-label': label,
         onMouseDown: (e) => e.preventDefault(),
         onClick: () => run(fn),
       },
-      h('span', { class: 'ed__shortcut-icon', html: icon(name, { size: 20 }) }),
-      h('span', { class: 'ed__shortcut-label' }, label)));
+      h('span', { class: 'ed__tablebtn-icon', html: icon(name, { size: 18 }) }),
+      h('span', {}, label)));
     });
-    shortcutBar.appendChild(h('button', {
-      type: 'button',
-      class: 'ed__shortcut',
-      title: 'その他の編集',
-      'aria-label': 'その他の編集',
-      onMouseDown: (e) => e.preventDefault(),
-      onClick: () => openToolsMenu(),
-    },
-    h('span', { class: 'ed__shortcut-icon', html: icon('more', { size: 20 }) }),
-    h('span', { class: 'ed__shortcut-label' }, 'その他')));
   }
 
-  function openToolsMenu() {
+  /** メニューの 1 行（押したら本文に効かせて、ボタンの色も映し直す） */
+  function cmdItem(label, name, fn, extra = {}) {
+    return { label, icon: icon(name, { size: 20 }), onClick: () => run(fn), ...extra };
+  }
+
+  function openHeadingMenu(anchor) {
     const st = surface?.state() || {};
-    const item = (label, description, name, fn) => ({
-      label, description, icon: icon(name, { size: 20 }), onClick: () => run(fn),
-    });
-    openMenu({
-      title: '編集',
+    openPopover({
+      anchor,
+      title: '見出し',
       items: [
-        item('大きな見出し', '章の区切りに', 'heading', (s) => s.commands.heading(1)),
-        item('小さな見出し', '節の区切りに', 'heading', (s) => s.commands.heading(3)),
-        item('番号つきリスト', '順番のあるものに', 'list', (s) => s.commands.ordered()),
-        item('斜体', '選んだところに', 'edit', (s) => s.commands.italic()),
-        item('打ち消し線', '選んだところに', 'text', (s) => s.commands.strike()),
-        item('コード（行の中）', '選んだところに', 'data', (s) => s.commands.code()),
-        item('コードのかたまり', '複数行のコードに', 'data', (s) => s.commands.codeBlock()),
-        item('区切り線', '話題を分ける', 'filter', (s) => s.commands.rule()),
+        cmdItem('大見出し', 'heading', (s) => s.commands.heading(1), { active: st.heading === 1, hint: 'H1' }),
+        cmdItem('中見出し', 'heading', (s) => s.commands.heading(2), { active: st.heading === 2, hint: 'H2' }),
+        cmdItem('小見出し', 'heading', (s) => s.commands.heading(3), { active: st.heading === 3, hint: 'H3' }),
+        { divider: true },
+        cmdItem('ふつうの文章にする', 'text', (s) => s.commands.plain()),
+      ],
+    });
+  }
+
+  function openFormatMenu(anchor) {
+    const st = surface?.state() || {};
+    openPopover({
+      anchor,
+      title: '文字',
+      items: [
+        cmdItem('太字', 'bold', (s) => s.commands.bold(), { active: st.bold }),
+        cmdItem('斜体', 'italic', (s) => s.commands.italic(), { active: st.italic }),
+        cmdItem('打ち消し線', 'strike', (s) => s.commands.strike(), { active: st.strike }),
+        cmdItem('コード（行の中）', 'codeTag', (s) => s.commands.code(), { active: st.code }),
+        { divider: true },
         st.link
-          ? item('リンクを外す', 'ただの文字に戻す', 'external', (s) => s.commands.unlink())
-          : item('リンク', 'URL を貼る', 'external', () => askLink()),
-        item('日時を入れる', 'いまの日付と時刻', 'clock', (s) => s.commands.timestamp(
+          ? cmdItem('リンクを外す', 'linkOff', (s) => s.commands.unlink())
+          : { label: 'リンク', icon: icon('link', { size: 20 }), onClick: () => askLink() },
+      ],
+    });
+  }
+
+  function openListMenu(anchor) {
+    const st = surface?.state() || {};
+    const inList = st.bullet || st.ordered || st.task;
+    openPopover({
+      anchor,
+      title: 'リスト',
+      items: [
+        cmdItem('箇条書き', 'list', (s) => s.commands.bullet(), { active: st.bullet }),
+        cmdItem('番号つき', 'listNumber', (s) => s.commands.ordered(), { active: st.ordered }),
+        cmdItem('チェック', 'checkbox', (s) => s.commands.task(), { active: st.task }),
+        inList ? { divider: true } : null,
+        inList ? cmdItem('項目の中で行を分ける', 'lineBreak', (s) => s.commands.lineBreak(),
+          { hint: 'Shift+Enter' }) : null,
+        st.canIndent ? cmdItem('字下げする', 'indent', (s) => s.commands.indent()) : null,
+        st.canOutdent ? cmdItem('字下げを戻す', 'outdent', (s) => s.commands.outdent()) : null,
+        st.task ? { divider: true } : null,
+        // 「済んだこと」を消し込みたい人と、記録として残しておきたい人がいる
+        st.task ? cmdItem(
+          st.taskStrike ? '済みに取り消し線を引かない' : '済みに取り消し線を引く',
+          'strike',
+          (s) => s.commands.taskStrike(!st.taskStrike),
+        ) : null,
+      ].filter(Boolean),
+    });
+  }
+
+  function openInsertMenu(anchor) {
+    const st = surface?.state() || {};
+    openPopover({
+      anchor,
+      title: '入れる',
+      items: [
+        cmdItem('表', 'table', (s) => s.commands.table(), { active: st.inTable }),
+        cmdItem('引用', 'quote', (s) => s.commands.quote(), { active: st.quote }),
+        cmdItem('コードのかたまり', 'codeTag', (s) => s.commands.codeBlock(), { active: st.codeBlock }),
+        cmdItem('区切り線', 'rule', (s) => s.commands.rule()),
+        { divider: true },
+        cmdItem('行を分ける', 'lineBreak', (s) => s.commands.lineBreak(), { hint: 'Shift+Enter' }),
+        cmdItem('日時', 'clock', (s) => s.commands.timestamp(
           formatDateTime(new Date().toISOString()),
         )),
-        ...(st.inTable ? [
-          { divider: true },
-          item('表：行を足す', '', 'plus', (s) => s.commands.addRow()),
-          item('表：列を足す', '', 'plus', (s) => s.commands.addColumn()),
-          item('表：行を削除', '', 'trash', (s) => s.commands.removeRow()),
-          item('表：列を削除', '', 'trash', (s) => s.commands.removeColumn()),
-          item('表を削除', '', 'trash', (s) => s.commands.removeTable()),
-        ] : []),
-        { divider: true },
+      ],
+    });
+  }
+
+  function openToolsMenu(anchor) {
+    openPopover({
+      anchor,
+      title: 'その他',
+      align: 'right',
+      items: [
         { label: '検索と置換', icon: icon('replace', { size: 20 }), onClick: () => toggleFind(true) },
         { label: '見出しへ移動', icon: icon('heading', { size: 20 }), onClick: () => openOutline() },
         { label: '文字数', icon: icon('data', { size: 20 }), onClick: () => openCountSheet() },
@@ -762,9 +846,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     const note = state.id ? store.getNote(state.id) : null;
     openMenu({
       title: state.title || '（無題のメモ）',
+      // 「表示設定」と「メモ情報」は、上のツールバーから直接開ける（ここには並べない）
       items: [
-        { label: '表示設定', icon: icon('text', { size: 20 }), description: '文字サイズ・行間・集中モード', onClick: () => openDisplaySettings() },
-        { label: 'メモ情報', icon: icon('info', { size: 20 }), description: 'タグ・復習の設定・復習の記録', onClick: () => openInfoPanel() },
         // メモ帳として使う人が、復習を付けずに書き留められるようにする
         state.presetId === 'none' || note?.status === 'inbox' ? {
           label: '復習を始める',
@@ -922,7 +1005,13 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   };
   window.addEventListener('beforeunload', onBeforeUnload);
 
-  /** 前に開いたときのカーソル位置・スクロール位置に戻す */
+  /**
+   * 開いたときの居場所。
+   *
+   * 同じ立ち上げのあいだに開き直したときは、さっきの続きから。
+   * アプリを開き直したあと（覚えていないとき）は、メモの始まりを見せる。
+   * 読み返すために開くことが多いので、勝手に末尾へ飛ばさない。
+   */
   function restorePosition() {
     const saved = state.id ? positions.get(state.id) : null;
     if (saved) {
@@ -931,8 +1020,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       return;
     }
     if (state.body) {
-      // 続きから書けるように、いちばん後ろへ
-      surface.focus({ end: true });
+      // 始まりを見せる。カーソルは置かない（開いただけでキーボードを出さない）
+      doc.scrollTop = 0;
       return;
     }
     if (!state.title) {

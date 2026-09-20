@@ -65,7 +65,18 @@ export async function createDocEditor(mount, {
         HTMLAttributes: { target: '_blank', rel: 'noopener noreferrer' },
       },
     }),
-    TaskList,
+    // 済みに取り消し線を引くかどうかは、リストごとに選べるようにする
+    TaskList.extend({
+      addAttributes() {
+        return {
+          strike: {
+            default: true,
+            parseHTML: (el) => el.getAttribute('data-strike') !== 'false',
+            renderHTML: (attrs) => ({ 'data-strike': attrs.strike === false ? 'false' : 'true' }),
+          },
+        };
+      },
+    }),
     TaskItem.configure({
       // チェックは入れ子にもできる（大きなやることの下に小さなやること）
       nested: true,
@@ -161,6 +172,9 @@ export async function createDocEditor(mount, {
         quote: editor.isActive('blockquote'),
         codeBlock: editor.isActive('codeBlock'),
         inTable: editor.isActive('table'),
+        taskStrike: editor.getAttributes('taskList')?.strike !== false,
+        canIndent: editor.can().sinkListItem('taskItem') || editor.can().sinkListItem('listItem'),
+        canOutdent: editor.can().liftListItem('taskItem') || editor.can().liftListItem('listItem'),
         canUndo: editor.can().undo(),
         canRedo: editor.can().redo(),
       };
@@ -195,6 +209,19 @@ export async function createDocEditor(mount, {
       codeBlock: () => chain().toggleCodeBlock().run(),
       rule: () => chain().setHorizontalRule().run(),
       table: () => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
+      /** ふつうの文章に戻す（見出し・引用・リストをほどく） */
+      plain: () => chain().clearNodes().run(),
+      /** 同じ項目・同じ段落の中で行を分ける */
+      lineBreak: () => chain().setHardBreak().run(),
+      /** リストの字下げ（チェックでも箇条書きでも効くように両方試す） */
+      indent: () => (editor.can().sinkListItem('taskItem')
+        ? chain().sinkListItem('taskItem').run()
+        : chain().sinkListItem('listItem').run()),
+      outdent: () => (editor.can().liftListItem('taskItem')
+        ? chain().liftListItem('taskItem').run()
+        : chain().liftListItem('listItem').run()),
+      /** 済みのチェックに取り消し線を引くか（いま居るリストの決めごと） */
+      taskStrike: (value) => chain().updateAttributes('taskList', { strike: value !== false }).run(),
       addRow: () => chain().addRowAfter().run(),
       addColumn: () => chain().addColumnAfter().run(),
       removeRow: () => chain().deleteRow().run(),

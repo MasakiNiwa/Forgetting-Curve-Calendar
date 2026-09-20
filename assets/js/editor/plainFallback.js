@@ -64,7 +64,8 @@ export function createPlainSurface(mount, {
       return {
         bold: false, italic: false, strike: false, code: false, link: false,
         heading: 0, bullet: false, ordered: false, task: false, quote: false,
-        codeBlock: false, inTable: false, canUndo: true, canRedo: true,
+        codeBlock: false, inTable: false, taskStrike: true,
+        canIndent: false, canOutdent: false, canUndo: true, canRedo: true,
       };
     },
     stats() {
@@ -86,7 +87,9 @@ export function createPlainSurface(mount, {
       redo: () => document.execCommand?.('redo'),
       bold: noop, italic: noop, strike: noop, code: noop,
       heading: noop, bullet: noop, ordered: noop, task: noop, quote: noop,
-      codeBlock: noop, rule: noop, table: noop,
+      codeBlock: noop, rule: noop, table: noop, plain: noop,
+      indent: noop, outdent: noop, taskStrike: noop,
+      lineBreak: () => insert('\n'),
       addRow: noop, addColumn: noop, removeRow: noop, removeColumn: noop, removeTable: noop,
       unlink: noop,
       link: (href) => insert(String(href || '')),

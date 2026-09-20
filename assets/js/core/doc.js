@@ -73,6 +73,9 @@ function normalizeNode(raw) {
     node.attrs = { level: Math.min(6, Math.max(1, numberAttr(attrs.level, 1) || 1)) };
   } else if (type === 'orderedList') {
     node.attrs = { start: Math.max(1, numberAttr(attrs.start, 1) || 1) };
+  } else if (type === 'taskList') {
+    // 済みに取り消し線を引くかどうか（リストごとに選べる）
+    node.attrs = { strike: attrs.strike !== false };
   } else if (type === 'taskItem') {
     node.attrs = { checked: attrs.checked === true };
   } else if (type === 'codeBlock') {
