@@ -5,6 +5,7 @@ import { guardExit } from './ui/backstack.js';
 import { mountApp } from './ui/app.js';
 import { applyTheme } from './ui/theme.js';
 import { watchViewport } from './ui/viewport.js';
+import { watchExternalLinks } from './ui/openExternal.js';
 import { APP_NAME, APP_VERSION } from './core/config.js';
 import { TabLock } from './core/tabLock.js';
 import { setupTabOwnership } from './ui/tabOwnership.js';
@@ -40,6 +41,8 @@ async function boot() {
   }, 60_000);
 
   watchViewport();
+  // 外のページへのリンクは、画面のどこから押しても同じ開き方にする
+  watchExternalLinks();
   await setupTabOwnership(store, new TabLock({ storage: window.localStorage }));
   // 復習のリマインド（受け取る設定のときだけ動く）
   setupReminders(store);

@@ -63,7 +63,7 @@ export function createPlainSurface(mount, {
     state() {
       return {
         bold: false, italic: false, strike: false, underline: false, code: false, link: false,
-        ink: '', marker: '',
+        ink: '', marker: '', linkHref: '',
         heading: 0, bullet: false, ordered: false, task: false, quote: false,
         codeBlock: false, inTable: false, taskStrike: true,
         canIndent: false, canOutdent: false, canUndo: true, canRedo: true,
@@ -93,7 +93,7 @@ export function createPlainSurface(mount, {
       indent: noop, outdent: noop, taskStrike: noop,
       lineBreak: () => insert('\n'),
       addRow: noop, addColumn: noop, removeRow: noop, removeColumn: noop, removeTable: noop,
-      unlink: noop,
+      unlink: noop, relink: noop,
       link: (href) => insert(String(href || '')),
       timestamp: (value) => insert(String(value || '')),
     },

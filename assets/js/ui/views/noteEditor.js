@@ -12,6 +12,7 @@ import { h, append, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { openSheet, openMenu, openDialog, openPopover, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
+import { openExternal } from '../openExternal.js';
 import { branchTree, curvePreview, reviewTimeline } from '../components.js';
 import { createDocEditor } from '../../editor/docEditor.js';
 import { createPlainSurface } from '../../editor/plainFallback.js';
@@ -252,6 +253,20 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, fromLink
 
   /** 編集面の置き場所。道具が載るまでは、書いてあった文字をそのまま見せる */
   const mount = h('div', { class: 'ed__mount' });
+  /**
+   * 本文の中のリンクを押したとき。
+   *
+   * 書いている途中に押しただけで画面が飛ぶと困るので、その場で開かずに
+   * 小さなメニューを出す（開く／コピー／直す／外す）。
+   * PC で Ctrl / ⌘ を押しながらなら、そのまま開く。
+   */
+  mount.addEventListener('click', (event) => {
+    const link = event.target?.closest?.('a[href]');
+    if (!link || !mount.contains(link)) return;
+    event.preventDefault();
+    if (event.metaKey || event.ctrlKey) { openLinkTarget(link.href); return; }
+    openLinkMenu(link);
+  });
   const loading = h('div', { class: 'rt ed__loading' }, state.body || '');
   const rich = h('div', { class: 'ed__rich' }, loading, mount);
 
@@ -1073,6 +1088,12 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, fromLink
           onClick: () => openMarkerMenu(anchor),
         },
         { divider: true },
+        st.link ? {
+          label: 'リンクを開く',
+          icon: icon('external', { size: 20 }),
+          hint: shortUrl(st.linkHref),
+          onClick: () => openLinkTarget(st.linkHref),
+        } : null,
         st.link
           ? cmdItem('リンクを外す', 'linkOff', (s) => s.commands.unlink())
           : { label: 'リンク', icon: icon('link', { size: 20 }), onClick: () => askLink() },
@@ -1204,23 +1225,78 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, fromLink
   }
 
   /** リンクの URL を聞いてから貼る */
-  function askLink() {
-    const input = h('input', { class: 'input', type: 'url', placeholder: 'https://' });
+  /** 外のページを開く（ホーム画面のアプリからは、端末のブラウザへ渡す） */
+  function openLinkTarget(href) {
+    if (!href) return;
+    if (openExternal(href)) return;
+    window.open(href, '_blank', 'noopener,noreferrer');
+  }
+
+  /** メニューの見出しに出す、短くした URL */
+  function shortUrl(href) {
+    const text = String(href || '').replace(/^https?:\/\//, '');
+    return text.length > 46 ? `${text.slice(0, 46)}…` : text;
+  }
+
+  /** 本文の中のリンクを押したときのメニュー */
+  function openLinkMenu(el) {
+    const href = el.href;
+    openPopover({
+      anchor: el,
+      title: shortUrl(href),
+      items: [
+        {
+          label: '開く',
+          icon: icon('external', { size: 20 }),
+          hint: 'Ctrl+クリック',
+          onClick: () => openLinkTarget(href),
+        },
+        {
+          label: 'リンクをコピー',
+          icon: icon('copy', { size: 20 }),
+          onClick: async () => {
+            const { copyText } = await import('../../core/exporter.js');
+            toast(await copyText(href) ? 'コピーしました' : 'コピーできませんでした');
+          },
+        },
+        { divider: true },
+        {
+          label: '行き先を直す',
+          icon: icon('link', { size: 20 }),
+          onClick: () => askLink({ href }),
+        },
+        {
+          label: 'リンクを外す',
+          icon: icon('linkOff', { size: 20 }),
+          onClick: () => run((sf) => sf.commands.unlink()),
+        },
+      ],
+    });
+  }
+
+  /**
+   * リンクの URL を聞く。
+   * href を渡したときは、いまカーソルがあるリンクの行き先を差し替える。
+   */
+  function askLink({ href = '' } = {}) {
+    const editing = Boolean(href);
+    const input = h('input', { class: 'input', type: 'url', placeholder: 'https://', value: href });
     openDialog({
-      title: 'リンクを貼る',
+      title: editing ? 'リンクの行き先' : 'リンクを貼る',
       variant: 'alert',
-      content: h('div', {}, input, h('div', { class: 'field__hint' }, 'えらんだ文字がリンクになります。')),
+      content: h('div', {}, input, h('div', { class: 'field__hint' },
+        editing ? 'このリンクの行き先を差し替えます。' : 'えらんだ文字がリンクになります。')),
       actions: [
         { label: 'キャンセル', onClick: (close) => close() },
         {
-          label: '貼る',
+          label: editing ? '直す' : '貼る',
           className: 'btn btn--text',
           onClick: (close) => {
             const url = input.value;
             close();
             // 押した時点の選択のまま貼る（ダイアログを閉じてから動かす）
             setTimeout(() => {
-              const ok = surface?.commands.link(url);
+              const ok = editing ? surface?.commands.relink(url) : surface?.commands.link(url);
               if (ok === false) toast('この URL は貼れません');
               updateButtons();
             }, 0);
