@@ -391,4 +391,55 @@ export function openMenu({ title, items }) {
   return ref;
 }
 
+/**
+ * その場で開く小さなメニュー（ポップオーバー）。
+ *
+ * 本文を書いている途中に使うので、シートのように画面を覆わない。
+ * 押してもカーソルが本文から外れない（＝キーボードが閉じない）ようにしてある。
+ *
+ * @param {{anchor:HTMLElement, items:Array, title?:string, align?:'left'|'right'}} options
+ */
+export function openPopover({ anchor, items, title, align = 'left' }) {
+  const scrim = h('div', { class: 'scrim scrim--clear' });
+  const pop = h('div', { class: 'popover', role: 'menu', 'aria-label': title || '' });
+  if (title) pop.appendChild(h('div', { class: 'popover__title' }, title));
+
+  let close = () => {};
+  items.filter(Boolean).forEach((item) => {
+    if (item.divider) { pop.appendChild(h('hr', { class: 'divider' })); return; }
+    pop.appendChild(h('button', {
+      type: 'button',
+      class: `popover__item${item.active ? ' popover__item--on' : ''}`,
+      role: 'menuitem',
+      // 押してもカーソルが本文から外れないようにする
+      onMouseDown: (e) => e.preventDefault(),
+      onClick: () => { close(); item.onClick?.(); },
+    },
+    item.icon ? h('span', { class: 'popover__icon', html: item.icon }) : null,
+    h('span', { class: 'popover__label' }, item.label),
+    item.hint ? h('span', { class: 'popover__hint' }, item.hint) : null));
+  });
+
+  layer().append(scrim, pop);
+  close = pushOverlay([scrim, pop]);
+  scrim.addEventListener('mousedown', (e) => e.preventDefault());
+  scrim.addEventListener('click', () => close());
+
+  // 押したボタンの真上に出す（画面からはみ出さないように寄せる）
+  const place = () => {
+    const rect = anchor.getBoundingClientRect();
+    const box = pop.getBoundingClientRect();
+    const margin = 8;
+    let left = align === 'right' ? rect.right - box.width : rect.left;
+    left = Math.max(margin, Math.min(left, window.innerWidth - box.width - margin));
+    const above = rect.top - box.height - 6;
+    const top = above >= margin ? above : Math.min(rect.bottom + 6, window.innerHeight - box.height - margin);
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+    pop.dataset.ready = 'true';
+  };
+  place();
+  return { close: () => close(), element: pop };
+}
+
 export { clear };

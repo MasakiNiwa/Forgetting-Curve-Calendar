@@ -102,7 +102,11 @@ function renderNode(node) {
     case 'listItem':
       return renderInto(h('li', { class: 'md__item' }), node.content);
     case 'taskList':
-      return renderInto(h('ul', { class: 'md__list md__list--task' }), node.content);
+      // 済みに取り消し線を引くかどうかは、書いた人が選んでいる
+      return renderInto(h('ul', {
+        class: 'md__list md__list--task',
+        'data-strike': node.attrs?.strike === false ? 'false' : 'true',
+      }), node.content);
     case 'taskItem': {
       const done = node.attrs?.checked === true;
       const li = h('li', { class: `md__item md__item--check${done ? ' md__item--done' : ''}` });

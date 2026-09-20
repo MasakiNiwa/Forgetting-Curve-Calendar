@@ -95,6 +95,47 @@ test('doc: 空の文書には段落を 1 つ置く', () => {
   assert.deepEqual(normalizeDoc({ type: 'doc', content: [] }), doc({ type: 'paragraph' }));
 });
 
+test('doc: チェックの取り消し線は、リストごとの決めごととして残る', () => {
+  const list = (attrs) => doc({
+    type: 'taskList',
+    ...(attrs ? { attrs } : {}),
+    content: [{ type: 'taskItem', attrs: { checked: true }, content: [para('済んだこと')] }],
+  });
+  // 何も言われていなければ、これまでどおり取り消し線を引く
+  assert.equal(normalizeDoc(list()).content[0].attrs.strike, true);
+  // 引かないと決めたら、そのまま残す
+  assert.equal(normalizeDoc(list({ strike: false })).content[0].attrs.strike, false);
+  // 見た目の決めごとなので、Markdown へ書き出すときは関係ない
+  assert.match(docToMarkdown(list({ strike: false })), /- \[x\] 済んだこと/);
+});
+
+test('doc: これまでの Markdown から読み直したチェックは、取り消し線あり', () => {
+  const d = markdownToDoc('- [ ] やること');
+  assert.equal(d.content[0].type, 'taskList');
+  assert.equal(normalizeDoc(d).content[0].attrs.strike, true);
+});
+
+test('doc: 項目の中の改行は、行を分けたまま残る', () => {
+  const d = doc({
+    type: 'bulletList',
+    content: [{
+      type: 'listItem',
+      content: [{
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '買い物' },
+          { type: 'hardBreak' },
+          { type: 'text', text: '（牛乳とパン）' },
+        ],
+      }],
+    }],
+  });
+  assert.equal(docToText(d), '買い物\n（牛乳とパン）');
+  // 読み直しても、項目は 1 つのまま
+  const back = markdownToDoc(docToMarkdown(d));
+  assert.equal(back.content[0].content.length, 1);
+});
+
 /* ------------------------------------------------------------------ */
 /* 文字にする・Markdown にする                                          */
 /* ------------------------------------------------------------------ */
