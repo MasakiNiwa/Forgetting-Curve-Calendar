@@ -315,8 +315,9 @@ export function normalizeNote(raw, settings = DEFAULT_SETTINGS) {
     parentId: typeof raw.parentId === 'string' ? raw.parentId : null,
     title: typeof raw.title === 'string' ? raw.title : '',
     cue: typeof raw.cue === 'string' ? raw.cue : '',
-    // 文書データを持たない（v0.11 以前の）メモは、書いてあった文字のまま扱う
-    doc: normalizeDoc(raw.doc),
+    // 本文（文書データ）は、開いたときに読む。
+    //   undefined … まだ読んでいない   null … 持っていない（v0.11 以前の形）
+    doc: raw.doc === undefined ? undefined : normalizeDoc(raw.doc),
     body: typeof raw.body === 'string' ? raw.body : '',
     tags: normalizeTags(raw.tags),
     anchorDate,

@@ -91,6 +91,7 @@ export function reviewCard({ store, note, review, onOpen, showActions = true }) 
       // 読むときの見た目に整えて出す（文書データを持たない古いメモは Markdown として）
       contentSlot.appendChild(noteBodyView(note, {
         text,
+        store,
         className: 'note-card__body note-card__body--full',
       }));
       return;

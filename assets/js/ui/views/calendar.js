@@ -371,18 +371,26 @@ function countMonth(store, year, month) {
   return count;
 }
 
-/** 「今日」「最初のメモ」「最後の復習」への近道 */
+/**
+ * 「今日」「最初のメモ」「最後の復習」への近道。
+ *
+ * 欲しいのは端の 2 つだけなので、並べ替えずに 1 回見て回る。
+ * （メモが数万件になると、日付を全部並べ替えるのは目に見えて重い）
+ */
 function quickJumps(store) {
   const jumps = [{ label: '今日', key: todayKey() }];
-  const dates = [...store.index.keys()].sort();
-  if (dates.length) {
-    const created = store.notes.map((n) => n.anchorDate).sort();
-    if (created.length) jumps.push({ label: '最初のメモ', key: created[0] });
-    const lastPending = store.notes
-      .flatMap((n) => n.reviews.filter((r) => r.status === 'pending').map((r) => r.due))
-      .sort();
-    if (lastPending.length) jumps.push({ label: '最後の復習', key: lastPending[lastPending.length - 1] });
-  }
+  if (!store.index.size) return jumps;
+  let first = null;
+  let last = null;
+  store.notes.forEach((note) => {
+    if (note.anchorDate && (!first || note.anchorDate < first)) first = note.anchorDate;
+    note.reviews.forEach((review) => {
+      if (review.status !== 'pending') return;
+      if (!last || review.due > last) last = review.due;
+    });
+  });
+  if (first) jumps.push({ label: '最初のメモ', key: first });
+  if (last) jumps.push({ label: '最後の復習', key: last });
   return jumps;
 }
 

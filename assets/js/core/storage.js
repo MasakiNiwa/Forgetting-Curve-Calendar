@@ -98,15 +98,44 @@ export class MemoryAdapter {
     this.data = null;
   }
 
-  async load() { return this.data; }
+  /**
+   * 本物の保存先（IndexedDB）と同じく、本文は別に持つ。
+   * 読み込みでは本文を返さず、要るときに loadDocs で渡す。
+   */
+  async load() {
+    if (!this.data) return null;
+    const copy = JSON.parse(JSON.stringify(this.data));
+    copy.notes = (copy.notes || []).map((note) => {
+      const { doc, ...rest } = note;
+      return rest;
+    });
+    return copy;
+  }
+
+  async loadDocs(ids) {
+    const out = new Map();
+    const wanted = new Set(ids || []);
+    (this.data?.notes || []).forEach((note) => {
+      if (wanted.has(note.id) && note.doc) out.set(note.id, JSON.parse(JSON.stringify(note.doc)));
+    });
+    return out;
+  }
+
   async token() { return this.data ? (this.data.meta?.saveToken ?? '') : undefined; }
   async save(data) { this.saveSync(data); }
 
   /** メモ単位の保存。実装の確認用に、本物のアダプタと同じ形で受ける。 */
   async saveDelta(plan) {
     const copy = (v) => JSON.parse(JSON.stringify(v));
+    const before = new Map((this.data?.notes || []).map((n) => [n.id, n.doc]));
+    // 本文が付いていないメモは、いま持っている本文をそのまま残す
+    const withDocs = (list) => list.map((note) => (
+      note.doc === undefined && before.has(note.id) && before.get(note.id) !== undefined
+        ? { ...note, doc: before.get(note.id) }
+        : note
+    ));
     if (plan.full || !this.data) {
-      this.data = copy({ ...plan.rest, notes: plan.notes });
+      this.data = copy({ ...plan.rest, notes: withDocs(plan.notes) });
       return;
     }
     const notes = this.data.notes ? [...this.data.notes] : [];
@@ -114,7 +143,7 @@ export class MemoryAdapter {
     plan.removed.forEach((id) => {
       if (at.has(id)) notes[at.get(id)] = null;
     });
-    plan.notes.forEach((note) => {
+    withDocs(plan.notes).forEach((note) => {
       if (at.has(note.id)) notes[at.get(note.id)] = copy(note);
       else notes.push(copy(note));
     });
@@ -130,9 +159,11 @@ export class MemoryAdapter {
 /* ------------------------------------------------------------------ */
 
 const DB_NAME = 'fcc';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const NOTES_STORE = 'notes';
 const META_STORE = 'meta';
+/** 本文（文書データ）だけを置くところ。開いたときに読む */
+const BODIES_STORE = 'bodies';
 
 function request(req) {
   return new Promise((resolve, reject) => {
@@ -150,6 +181,24 @@ function transactionDone(tx) {
 }
 
 /**
+ * 全部を書き直すとき、もう無いメモの本文を片づける。
+ * 「持っているメモの本文だけ消す」のではなく「持っていないものを消す」ので、
+ * まだ読み込んでいない本文を巻き込まない。
+ */
+function pruneBodies(bodies, keep) {
+  return new Promise((resolve, reject) => {
+    const req = bodies.openKeyCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) { resolve(); return; }
+      if (!keep.has(cursor.key)) bodies.delete(cursor.key);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error || new Error('本文の片づけに失敗しました'));
+  });
+}
+
+/**
  * メモ 1 件を 1 レコードとして持つ保存先。
  *
  * localStorage は「文字列 1 本」なので、1 文字の修正でも全メモを
@@ -159,6 +208,10 @@ function transactionDone(tx) {
  * 弱点は「同期で書けない」こと。タブを閉じる直前は待ってもらえないので、
  * そのときだけ localStorage に控え（journal）を synchronous に置き、
  * 次回の読み込みで重ねて取り戻す。
+ *
+ * v0.15 から、本文（文書データ）は別のところ（bodies）に置く。
+ * 一覧・カレンダー・検索に要るのは「題・手掛かり・素の文字・予定」だけで、
+ * 本文そのものは開いたときに 1 件読めばよい。起動で読む量がその分減る。
  */
 export class IndexedDbAdapter {
   constructor({ name = DB_NAME, journalKey = JOURNAL_KEY } = {}) {
@@ -197,6 +250,8 @@ export class IndexedDbAdapter {
         const db = req.result;
         if (!db.objectStoreNames.contains(NOTES_STORE)) db.createObjectStore(NOTES_STORE, { keyPath: 'id' });
         if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE);
+        // 本文の置き場（v0.15〜）。中身の移し替えは、次の保存でまとめて行う
+        if (!db.objectStoreNames.contains(BODIES_STORE)) db.createObjectStore(BODIES_STORE, { keyPath: 'id' });
       };
       req.onsuccess = () => {
         clearTimeout(timer);
@@ -254,6 +309,25 @@ export class IndexedDbAdapter {
     return value;
   }
 
+  /**
+   * 本文（文書データ）を、要るぶんだけ読む。
+   * @param {string[]} ids
+   * @returns {Promise<Map<string, object>>}
+   */
+  async loadDocs(ids) {
+    const out = new Map();
+    const wanted = [...new Set((ids || []).filter(Boolean))];
+    if (!wanted.length) return out;
+    const db = await this.open();
+    const tx = db.transaction([BODIES_STORE], 'readonly');
+    const store = tx.objectStore(BODIES_STORE);
+    await Promise.all(wanted.map(async (id) => {
+      const record = await request(store.get(id));
+      if (record && record.doc) out.set(id, record.doc);
+    }));
+    return out;
+  }
+
   async save(data) {
     const { notes, rest } = splitData(data);
     return this.saveDelta({ full: true, notes, removed: [], rest });
@@ -262,14 +336,28 @@ export class IndexedDbAdapter {
   /** 変わったメモだけを書く（rest は小さいので毎回まとめて書く） */
   async saveDelta(plan) {
     const db = await this.open();
-    const tx = db.transaction([NOTES_STORE, META_STORE], 'readwrite');
+    const tx = db.transaction([NOTES_STORE, META_STORE, BODIES_STORE], 'readwrite');
     const notes = tx.objectStore(NOTES_STORE);
-    if (plan.full) notes.clear();
-    (plan.removed || []).forEach((id) => notes.delete(id));
-    (plan.notes || []).forEach((note) => notes.put(note));
+    const bodies = tx.objectStore(BODIES_STORE);
+    if (plan.full) {
+      notes.clear();
+      // 本文は消さない。いま持っていないメモの本文も、保存先には残っているため。
+      // 無くなったメモのぶんだけ、あとで消す（下の pruneBodies）
+    }
+    (plan.removed || []).forEach((id) => { notes.delete(id); bodies.delete(id); });
+    (plan.notes || []).forEach((note) => {
+      const { doc, ...rest } = note;
+      notes.put(rest);
+      // 読んでいないメモ（doc が付いていない）は、保存先の本文をそのままにする
+      if (doc !== undefined) {
+        if (doc) bodies.put({ id: note.id, doc });
+        else bodies.delete(note.id);
+      }
+    });
     const meta = tx.objectStore(META_STORE);
     meta.put(plan.rest, 'rest');
     meta.put(plan.rest?.meta?.saveToken ?? '', 'token');
+    if (plan.full) await pruneBodies(bodies, new Set((plan.notes || []).map((n) => n.id)));
     await transactionDone(tx);
     // ここまで来たら控えは要らない
     this.clearJournal();

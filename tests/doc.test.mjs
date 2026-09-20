@@ -291,6 +291,71 @@ test('store: 中身が同じ文書データでは、更新したことにしな�
   assert.equal(store.getNote(note.id).contentUpdatedAt, before);
 });
 
+test('store: 本文は、開いたときに読む', async () => {
+  const adapter = new MemoryAdapter();
+  const store = new Store(adapter);
+  await store.load();
+  const note = store.addNote({ doc: doc(para('あとから読む本文')), body: 'あとから読む本文' });
+  await store.flush();
+
+  // 読み込み直後は、本文はまだ手元に無い（一覧・カレンダーには要らない）
+  const fresh = new Store(adapter);
+  await fresh.load();
+  const loaded = fresh.getNote(note.id);
+  assert.equal(loaded.doc, undefined, 'まだ読んでいない');
+  assert.equal(loaded.body, 'あとから読む本文', '素の文字は手元にある');
+
+  // 開いたときに 1 件だけ読む
+  const got = await fresh.ensureDoc(loaded);
+  assert.equal(docToText(got), 'あとから読む本文');
+  assert.equal(fresh.getNote(note.id).doc, got, '一度読んだら覚えておく');
+});
+
+test('store: 読んでいない本文は、他のメモを保存しても消えない', async () => {
+  const adapter = new MemoryAdapter();
+  const store = new Store(adapter);
+  await store.load();
+  const kept = store.addNote({ doc: doc(para('触らないメモ')), body: '触らないメモ' });
+  const other = store.addNote({ doc: doc(para('こちらを直す')), body: 'こちらを直す' });
+  await store.flush();
+
+  const fresh = new Store(adapter);
+  await fresh.load();
+  fresh.updateNote(other.id, { doc: doc(para('直したあと')), body: '直したあと' });
+  await fresh.flush();
+
+  // 触っていないメモの本文は、保存先に残ったまま
+  const again = new Store(adapter);
+  await again.load();
+  assert.equal(docToText(await again.ensureDoc(again.getNote(kept.id))), '触らないメモ');
+  assert.equal(docToText(await again.ensureDoc(again.getNote(other.id))), '直したあと');
+});
+
+test('store: 消したメモの本文は残さない', async () => {
+  const adapter = new MemoryAdapter();
+  const store = new Store(adapter);
+  await store.load();
+  const note = store.addNote({ doc: doc(para('消えるメモ')), body: '消えるメモ' });
+  await store.flush();
+  store.deleteNote(note.id);
+  await store.flush();
+  assert.equal((await adapter.loadDocs([note.id])).size, 0);
+});
+
+test('store: 控えを作るときは、本文をそろえてから', async () => {
+  const adapter = new MemoryAdapter();
+  const store = new Store(adapter);
+  await store.load();
+  store.addNote({ doc: doc(para('控えに入る本文')), body: '控えに入る本文' });
+  await store.flush();
+
+  const fresh = new Store(adapter);
+  await fresh.load();
+  await fresh.ensureAllDocs();
+  const backup = fresh.exportData();
+  assert.equal(docToText(backup.notes[0].doc), '控えに入る本文');
+});
+
 test('migrations: 古いメモは、読み込みのときに文書データへ移す', () => {
   const data = migrate({
     schemaVersion: 5,

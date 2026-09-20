@@ -66,6 +66,23 @@ const newStore = async () => {
 
 /* ------------------------------------------------------------------ date */
 
+test('date: 日付の足し算は、Date を作らなくても同じ答えになる', () => {
+  // 月またぎ・うるう年・世紀の境目
+  assert.equal(addDays('2026-01-31', 1), '2026-02-01');
+  assert.equal(addDays('2024-02-28', 1), '2024-02-29');
+  assert.equal(addDays('2025-02-28', 1), '2025-03-01');
+  assert.equal(addDays('1999-12-31', 1), '2000-01-01');
+  assert.equal(addDays('2000-02-28', 2), '2000-03-01');
+  assert.equal(addDays('1900-02-28', 1), '1900-03-01');
+  assert.equal(addDays('2026-03-01', -1), '2026-02-28');
+  assert.equal(addDays('2026-01-15', 0), '2026-01-15');
+  // 100 年先まで（2100 年はうるう年ではないので 36524 日）
+  assert.equal(addDays('2026-09-20', 36524), '2126-09-20');
+  assert.equal(diffDays('2026-09-20', '2126-09-20'), 36524);
+  assert.equal(diffDays('2024-02-28', '2024-03-01'), 2);
+  assert.equal(diffDays('2026-03-01', '2026-02-28'), -1);
+});
+
 test('date: 日付キーの加算と差分', () => {
   assert.equal(addDays('2026-09-17', 3), '2026-09-20');
   assert.equal(addDays('2026-12-30', 3), '2027-01-02');

@@ -28,6 +28,8 @@ export function startReviewSession(store, options = {}) {
 
   // 出来事を記録するとスケジュールが変わるため、対象は開始時点で固定する
   const plan = queue.map(({ note, review }) => ({ noteId: note.id, reviewId: review.id }));
+  // 本文は開いたときに読む作り。答え合わせで待たせないよう、この列のぶんは先に読む
+  store.ensureDocs(queue.map((item) => item.note));
   const results = { known: 0, vague: 0, forgot: 0, skipped: 0 };
   let cursor = 0;
   let revealed = false;
@@ -91,7 +93,7 @@ export function startReviewSession(store, options = {}) {
         // 明示的なタイトルがあるときだけ見出しを添える（本文と重複させない）
         note.cue && note.title ? h('div', { class: 'session__answer-label' }, note.title) : null,
         text
-          ? noteBodyView(note, { text, className: 'session__body' })
+          ? noteBodyView(note, { text, store, className: 'session__body' })
           : h('p', { class: 'session__body' }, '（本文はありません）'),
       ]);
       append(clear(actions), [

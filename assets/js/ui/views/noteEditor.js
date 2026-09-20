@@ -74,8 +74,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     id: existing?.id || null,
     title: existing?.title ?? '',
     cue: existing?.cue ?? '',
-    // 本文の正本。まだ文書データを持たない（v0.11 以前の）メモは null
-    doc: existing?.doc ?? null,
+    // 本文の正本。undefined なら「まだ読んでいない」（開くときに読む）
+    doc: existing?.doc,
     // 探す・数える・書き出すための写し
     body: existing?.body ?? '',
     tags: (existing?.tags ?? parent?.tags ?? []).join(' '),
@@ -96,18 +96,29 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   if (usableDraft) {
     Object.assign(state, draft.value);
     // 控えは書き換えられる置き場所にあるので、形を確かめてから使う
-    state.doc = normalizeDoc(state.doc);
+    // （控えに本文が無ければ、保存されているものを読む＝undefined のまま）
+    state.doc = state.doc === undefined ? undefined : normalizeDoc(state.doc);
     state.body = typeof state.body === 'string' ? state.body : '';
   }
 
   /**
-   * 編集面に最初に載せる文書データ。
+   * 編集面に最初に載せる文書データを用意する。
    *
-   * v0.11 以前のメモは Markdown の文字しか持っていない。開いたときに読み直して
-   * 見たままの形にするが、書き換えるまでは元の文字のまま保存されている
-   * （＝開いただけでは、読み取りの取りこぼしで本文が変わることがない）。
+   * 本文は開いたときに読む作りなので（v0.15）、まずここで 1 件だけ読む。
+   * 書きかけの控えがあるときは、そちらが優先（もう手元にある）。
+   * 文書データを持たない古い形なら、素の文字から組み立てる。
    */
-  const initialDoc = state.doc || markdownToDoc(state.body);
+  async function loadInitialDoc() {
+    if (state.doc) return state.doc;
+    if (state.doc === undefined && existing) {
+      const loaded = await store.ensureDoc(existing);
+      if (loaded) {
+        state.doc = loaded;
+        return loaded;
+      }
+    }
+    return markdownToDoc(state.body);
+  }
 
   let saveTimer = null;
   let dirty = false;
@@ -222,11 +233,11 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         className: 'btn btn--text btn--sm',
         onClick: (e) => {
           clearDraft(key);
-          state.doc = existing?.doc ?? null;
+          state.doc = existing?.doc;
           state.body = existing?.body ?? '';
           state.title = existing?.title ?? '';
           state.cue = existing?.cue ?? '';
-          surface?.setDoc(state.doc || markdownToDoc(state.body));
+          loadInitialDoc().then((doc) => surface?.setDoc(doc));
           titleInput.value = state.title;
           cueInput.value = state.cue;
           synced = true;
@@ -279,27 +290,30 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     restorePosition();
   }
 
-  createDocEditor(mount, {
-    doc: initialDoc,
-    editable: !store.readOnly,
-    placeholder: '書き始めてください。',
-    onChange: onSurfaceChange,
-    onSelectionChange: () => { updateButtons(); updateStats(); },
-  }).then((next) => {
-    if (disposed) { next.destroy(); return; }
-    attachSurface(next);
-  }).catch((error) => {
-    console.warn('[fcc] 本文の編集の道具を読み込めませんでした', error);
-    if (disposed) return;
-    // 書けないままにしない。ふつうの入力欄として続けられるようにする
-    attachSurface(createPlainSurface(mount, {
+  loadInitialDoc().then((initialDoc) => {
+    if (disposed) return null;
+    return createDocEditor(mount, {
       doc: initialDoc,
       editable: !store.readOnly,
       placeholder: '書き始めてください。',
       onChange: onSurfaceChange,
-      onSelectionChange: () => updateStats(),
-    }));
-    setStatus('見たままの編集は読み込めませんでした（文字だけで書けます）', 'warn');
+      onSelectionChange: () => { updateButtons(); updateStats(); },
+    }).then((next) => {
+      if (disposed) { next.destroy(); return; }
+      attachSurface(next);
+    }).catch((error) => {
+      console.warn('[fcc] 本文の編集の道具を読み込めませんでした', error);
+      if (disposed) return;
+      // 書けないままにしない。ふつうの入力欄として続けられるようにする
+      attachSurface(createPlainSurface(mount, {
+        doc: initialDoc,
+        editable: !store.readOnly,
+        placeholder: '書き始めてください。',
+        onChange: onSurfaceChange,
+        onSelectionChange: () => updateStats(),
+      }));
+      setStatus('見たままの編集は読み込めませんでした（文字だけで書けます）', 'warn');
+    });
   });
 
   buildShortcuts();

@@ -146,17 +146,31 @@ export function docView(raw, { className = '' } = {}) {
 /**
  * メモの本文を出す。
  *
+ * 本文（文書データ）は開いたときに読む（v0.15）。まだ手元に無いときは、
+ * 素の文字をすぐ出しておき、読めたところで見た目を整えたものに差し替える。
+ * 読む人を空白のまま待たせないため。
+ *
  * v0.14 で、保存されている本文はすべて文書データに揃えた（migrations の v6→v7）。
- * それでも `doc` が無いものが来たら（読み込みの途中や、古い形のままの取り込み）、
- * 書いてあった文字を Markdown として読んで出す。読む人に空白を見せないため。
+ * それでも `doc` が無い（= null）ものが来たら、書いてあった文字をそのまま出す。
  *
  * @param {object} note
- * @param {{className?:string, text?:string}} options
+ * @param {{className?:string, text?:string, store?:object}} options
  */
 export function noteBodyView(note, options = {}) {
-  if (note?.doc) return docView(note.doc, { className: options.className });
+  const { className = '', store } = options;
+  if (note?.doc) return docView(note.doc, { className });
   const text = options.text !== undefined ? options.text : (note?.body || '');
-  return markdownView(text, { className: options.className });
+
+  // まだ読んでいない本文は、読めてから差し替える
+  if (note && note.doc === undefined && typeof store?.ensureDoc === 'function') {
+    const slot = h('div', { class: 'md-slot' }, markdownView(text, { className }));
+    store.ensureDoc(note).then((doc) => {
+      if (!doc || !slot.isConnected) return;
+      slot.replaceChildren(docView(doc, { className }));
+    });
+    return slot;
+  }
+  return markdownView(text, { className });
 }
 
 /** 文書データを持つメモか（表示の出しわけ用） */
