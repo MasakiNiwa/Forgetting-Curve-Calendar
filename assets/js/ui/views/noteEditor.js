@@ -101,22 +101,56 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     state.body = typeof state.body === 'string' ? state.body : '';
   }
 
+  /** いま保存されているメモ（読み直しのあとは、こちらが正しい） */
+  function currentNote() {
+    return state.id ? store.getNote(state.id) : null;
+  }
+
+  /** 保存されている本文を読む（書きかけを破棄したとき・読み直したとき） */
+  async function loadStoredDoc() {
+    const note = currentNote() || existing;
+    if (!note) return markdownToDoc('');
+    const stored = note.doc === undefined ? await store.ensureDoc(note) : note.doc;
+    return stored || markdownToDoc(note.body || '');
+  }
+
+  /** 書きかけの復元を知らせ、未保存として扱う（本文だけが違うときも） */
+  function markRestored() {
+    if (restoreBanner) restoreBanner.hidden = false;
+    setTimeout(() => markDirty(), 0);
+  }
+
+  /** 書きかけの控えに入っていた本文（あれば、そちらを開く） */
+  const draftDoc = usableDraft ? normalizeDoc(draft.value?.doc) : null;
+  /** 保存されている本文が読めなかったか（読めないまま書かせない） */
+  let docUnavailable = false;
+
   /**
    * 編集面に最初に載せる文書データを用意する。
    *
    * 本文は開いたときに読む作りなので（v0.15）、まずここで 1 件だけ読む。
-   * 書きかけの控えがあるときは、そちらが優先（もう手元にある）。
-   * 文書データを持たない古い形なら、素の文字から組み立てる。
+   * 読めなかったときは null を返す。**素の文字から組み立て直さない**
+   * （書き換えると、読めなかっただけの本文を上書きしてしまうため）。
    */
   async function loadInitialDoc() {
-    if (state.doc) return state.doc;
-    if (state.doc === undefined && existing) {
-      const loaded = await store.ensureDoc(existing);
-      if (loaded) {
-        state.doc = loaded;
-        return loaded;
-      }
+    let stored = existing ? existing.doc : null;
+    if (existing && stored === undefined) stored = await store.ensureDoc(existing);
+    if (existing && store.docUnavailable(existing)) {
+      docUnavailable = true;
+      return null;
     }
+
+    if (draftDoc) {
+      state.doc = draftDoc;
+      // 見た目だけを直した書きかけ（文字は同じ）も、未保存として扱う
+      if (JSON.stringify(draftDoc) !== JSON.stringify(stored ?? null)) markRestored();
+      return draftDoc;
+    }
+    if (stored) {
+      state.doc = stored;
+      return stored;
+    }
+    state.doc = existing ? (existing.doc ?? null) : null;
     return markdownToDoc(state.body);
   }
 
@@ -194,6 +228,16 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   const doc = h('div', { class: 'ed__doc' }, docInner);
 
   const statusText = h('span', { class: 'ed__status-text' });
+  /**
+   * 見るだけのタブのための「このタブで編集」。
+   * 画面いっぱいの編集画面では、上の案内バーが隠れて押せないので、ここにも置く。
+   */
+  const takeOverBtn = h('button', {
+    type: 'button',
+    class: 'btn btn--text btn--sm ed__takeover',
+    hidden: true,
+    onClick: () => store.emit({ type: 'tab:request-edit' }),
+  }, 'このタブで編集');
   const statusCount = h('button', {
     type: 'button',
     class: 'ed__status-count',
@@ -209,6 +253,30 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     label: 'やり直す',
     onClick: () => run((s) => s.commands.redo()),
   });
+
+  /**
+   * 書きかけを復元したときの知らせ。
+   * 本文の違いは読み込みのあとで分かるので、あとから出せるようにしておく。
+   */
+  const restoreBanner = h('div', { class: 'banner banner--info ed__banner', hidden: !restored },
+    h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
+    h('span', { style: { flex: '1' } }, '保存されていなかった書きかけを復元しました。'),
+    button('破棄', {
+      className: 'btn btn--text btn--sm',
+      onClick: () => {
+        clearDraft(key);
+        state.doc = existing?.doc;
+        state.body = existing?.body ?? '';
+        state.title = existing?.title ?? '';
+        state.cue = existing?.cue ?? '';
+        loadStoredDoc().then((doc) => { if (doc) surface?.setDoc(doc); });
+        titleInput.value = state.title;
+        cueInput.value = state.cue;
+        synced = true;
+        updateStats({ immediate: true });
+        restoreBanner.hidden = true;
+      },
+    }));
 
   const findBar = h('div', { class: 'ed__find', hidden: true });
   // 表の中にカーソルがあるときだけ出る、行と列の操作
@@ -226,25 +294,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       iconButton(icon('format'), { label: '表示設定', onClick: () => openDisplaySettings() }),
       iconButton(icon('info'), { label: 'メモ情報', onClick: () => openInfoPanel() }),
       iconButton(icon('more'), { label: 'その他', onClick: () => openEditorMenu() })),
-    restored ? h('div', { class: 'banner banner--info ed__banner' },
-      h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
-      h('span', { style: { flex: '1' } }, '保存されていなかった書きかけを復元しました。'),
-      button('破棄', {
-        className: 'btn btn--text btn--sm',
-        onClick: (e) => {
-          clearDraft(key);
-          state.doc = existing?.doc;
-          state.body = existing?.body ?? '';
-          state.title = existing?.title ?? '';
-          state.cue = existing?.cue ?? '';
-          loadInitialDoc().then((doc) => surface?.setDoc(doc));
-          titleInput.value = state.title;
-          cueInput.value = state.cue;
-          synced = true;
-          updateStats({ immediate: true });
-          e.target.closest('.ed__banner').remove();
-        },
-      })) : null,
+    restoreBanner,
     existing?.conflicts?.length ? conflictBanner(store, existing) : null,
     parent ? h('div', { class: 'ed__parent' },
       h('span', { html: icon('branch', { size: 16 }), style: { display: 'flex' } }),
@@ -253,7 +303,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     doc,
     tableBar,
     shortcutBar,
-    h('footer', { class: 'ed__status' }, statusText, h('span', { style: { flex: '1' } }), statusCount));
+    h('footer', { class: 'ed__status' }, statusText, takeOverBtn,
+      h('span', { style: { flex: '1' } }), statusCount));
 
   /* ---------------------------------------------------------- 編集面 */
 
@@ -292,6 +343,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   loadInitialDoc().then((initialDoc) => {
     if (disposed) return null;
+    // 本文が読めなかった。書かせずに、読み直す道だけを出す
+    if (initialDoc === null && docUnavailable) { showDocError(); return null; }
     return createDocEditor(mount, {
       doc: initialDoc,
       editable: !store.readOnly,
@@ -316,6 +369,30 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     });
   });
 
+  /**
+   * 本文が読めなかったときの知らせ。
+   *
+   * ここで素の文字から組み立て直して書けるようにすると、
+   * 「読めなかっただけの本文」を、そのまま上書きしてしまう。
+   * だから書かせず、読み直す道だけを出す。
+   */
+  function showDocError() {
+    editorEl.dataset.loading = '';
+    titleInput.readOnly = true;
+    cueInput.readOnly = true;
+    setStatus('本文を読み込めませんでした', 'error');
+    if (editorEl.querySelector('.ed__error')) return;
+    const box = h('div', { class: 'ed__error' },
+      h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
+      h('span', { style: { flex: '1' } },
+        '本文を読み込めませんでした。上書きしてしまわないよう、この画面では書けません。'),
+      button('読み直す', {
+        className: 'btn btn--sm',
+        onClick: () => window.location.reload(),
+      }));
+    editorEl.querySelector('.ed__doc').insertAdjacentElement('beforebegin', box);
+  }
+
   buildShortcuts();
   updateStats({ immediate: true });
   updateDocumentTitle();
@@ -331,16 +408,69 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
    */
   function applyReadOnly() {
     const viewer = Boolean(store.readOnly);
-    titleInput.readOnly = viewer;
-    cueInput.readOnly = viewer;
-    surface?.setEditable(!viewer);
+    titleInput.readOnly = viewer || docUnavailable;
+    cueInput.readOnly = viewer || docUnavailable;
+    if (!docUnavailable) surface?.setEditable(!viewer);
+    takeOverBtn.hidden = !viewer;
     if (viewer) setStatus('別のタブで編集中（このタブは見るだけ）', 'warn');
-    else if (!dirty) setStatus(state.id ? '保存済み' : '新しいメモ');
+    else if (!dirty && !docUnavailable) setStatus(state.id ? '保存済み' : '新しいメモ');
   }
   applyReadOnly();
 
+  /**
+   * 保存されている内容で読み直す（別のタブから編集を引き継いだときなど）。
+   *
+   * 引き継いだのに古い本文が画面に残っていると、そのまま 1 文字打った拍子に
+   * 相手の新しい本文を消してしまう。書きかけがあるときは捨てずに、
+   * 「競合した本文」へ退避してから入れ替える。
+   */
+  async function adoptStoredNote() {
+    if (!state.id) return;
+    const note = store.getNote(state.id);
+    if (!note) {
+      toast('このメモは別のタブで削除されました');
+      dirty = false;
+      navigate(returnTo);
+      return;
+    }
+    syncState();
+    const localBody = state.body;
+    const localDoc = state.doc;
+    const hadLocalEdits = dirty && localBody !== (note.body || '');
+
+    state.title = note.title || '';
+    state.cue = note.cue || '';
+    state.tags = (note.tags || []).join(' ');
+    state.body = note.body || '';
+    state.doc = note.doc;
+    titleInput.value = state.title;
+    cueInput.value = state.cue;
+
+    const doc = await loadStoredDoc();
+    if (doc && surface) surface.setDoc(doc);
+    synced = true;
+    dirty = false;
+    clearTimeout(saveTimer);
+    updateStats({ immediate: true });
+    updateDocumentTitle();
+
+    if (hadLocalEdits) {
+      // 書きかけは捨てない。あとから見比べられるように残す
+      const entry = { at: new Date().toISOString(), body: localBody };
+      if (localDoc) entry.doc = localDoc;
+      note.conflicts = [entry, ...(note.conflicts || [])].slice(0, 5);
+      store.commit({ type: 'note:update', noteId: note.id, contentChanged: false });
+      toast('別のタブの内容で読み直しました（書きかけは「競合した本文」に残しました）');
+    } else {
+      setStatus('別のタブの内容で読み直しました');
+      setTimeout(() => { if (!dirty) setStatus('保存済み'); }, 2500);
+    }
+  }
+
   const offTabMode = store.subscribe((event) => {
-    if (event?.type === 'tab:mode') applyReadOnly();
+    if (event?.type === 'tab:mode') { applyReadOnly(); return; }
+    // 別のタブから引き継いだ・読み直した
+    if (event?.type === 'data:reloaded') adoptStoredNote();
   });
 
   /** 書いているところが隠れないように、必要なときだけスクロールする */
@@ -1037,7 +1167,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
               danger: true,
             });
             if (!ok) return;
-            const removed = store.deleteNote(note.id);
+            const removed = await store.deleteNote(note.id);
+            if (!removed.length) return;
             clearDraft(key);
             dirty = false;
             navigate(returnTo);

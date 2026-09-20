@@ -21,8 +21,13 @@ export function backupLabel(status) {
 /** バックアップを 1 つのファイルに保存する */
 export async function saveBackupFile(store) {
   try {
-    // 本文は開いたときに読む作りなので、控えを作る前にそろえておく
-    await store.ensureAllDocs();
+    // 本文は開いたときに読む作りなので、控えを作る前にそろえておく。
+    // 読めなかったときは、欠けた控えを作らずにやめる（あとで気づけないため）
+    const ready = await store.ensureAllDocs();
+    if (!ready) {
+      toast('本文を読み込めなかったので、バックアップを取りやめました。もう一度お試しください。');
+      return false;
+    }
     downloadText(
       buildFilename('forgetting-curve-backup', 'json'),
       serializeBackup(store.exportData()),

@@ -56,6 +56,11 @@ export async function setupTabOwnership(store, lock) {
   await lock.start();
   apply(lock.owner, { quiet: true });
 
+  // 編集画面からの「このタブで編集」（画面いっぱいのときは上のバーが隠れるため）
+  store.subscribe((event) => {
+    if (event?.type === 'tab:request-edit' && !lock.owner) takeOver();
+  });
+
   // 別タブからの合図（持ち主の交代・譲ってほしいという依頼）
   window.addEventListener('storage', async (event) => {
     if (!event.key) return;

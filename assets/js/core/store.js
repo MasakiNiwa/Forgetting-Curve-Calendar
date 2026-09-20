@@ -78,6 +78,10 @@ function mergeNote(ours, theirs) {
     title: winner.title,
     cue: winner.cue,
     body: winner.body,
+    // 本文の正本（doc）も、勝った側に合わせる。
+    // 別タブから来たものは本文を持っていない（開いたときに読む作り）ので、
+    // ここでは「まだ読んでいない」に戻し、保存先にある新しい方を読み直させる。
+    doc: theirContentNewer ? theirs.doc : ours.doc,
     tags: [...winner.tags],
     color: winner.color,
     anchorDate: winner.anchorDate,
@@ -92,7 +96,10 @@ function mergeNote(ours, theirs) {
   if (conflicted) {
     const already = note.conflicts.some((c) => c.body === loser.body);
     if (!already) {
-      note.conflicts = [{ at: new Date().toISOString(), body: loser.body }, ...note.conflicts].slice(0, 5);
+      // 負けた側は退避しておく。見た目まで残せるよう、手元にあれば文書データも一緒に
+      const entry = { at: new Date().toISOString(), body: loser.body };
+      if (loser.doc) entry.doc = loser.doc;
+      note.conflicts = [entry, ...note.conflicts].slice(0, 5);
     }
   }
 
@@ -210,11 +217,18 @@ export class Store {
       wanted.forEach((note) => { note.doc = note.doc ?? null; out.set(note.id, note.doc); });
       return out;
     }
-    let loaded = new Map();
+    let loaded;
     try {
       loaded = await this.adapter.loadDocs(wanted.map((n) => n.id));
+      this.lastDocError = null;
     } catch (err) {
+      // 読めなかったときは「持っていない」と覚えない。
+      // 覚えてしまうと、原因が直ってからも読み直さず、
+      // 空のまま保存・書き出しをしてしまう。
       console.warn('[fcc] 本文を読めませんでした', err);
+      this.lastDocError = err;
+      this.emit({ type: 'doc:error', error: err });
+      return out;
     }
     wanted.forEach((note) => {
       // 保存先に無ければ「持っていない」として覚える（何度も読みに行かない）
@@ -224,9 +238,18 @@ export class Store {
     return out;
   }
 
-  /** 全部の本文を手元にそろえる（書き出し・まるごと保存の前に） */
+  /**
+   * 全部の本文を手元にそろえる（書き出し・まるごと保存の前に）。
+   * @returns {Promise<boolean>} ひとつでも読めなかったら false
+   */
   async ensureAllDocs() {
-    return this.ensureDocs(this.data.notes);
+    await this.ensureDocs(this.data.notes);
+    return this.data.notes.every((note) => note.doc !== undefined);
+  }
+
+  /** そのメモの本文が「読めなかった」状態か（無いのとは違う） */
+  docUnavailable(note) {
+    return Boolean(note) && note.doc === undefined && this.lazyDocs;
   }
 
   async load() {
@@ -283,6 +306,8 @@ export class Store {
     const incoming = normalizeData(migrate(raw));
 
     const tombstones = { ...normalizeTombstones(this.data.deleted), ...incoming.deleted };
+    /** 退避した本文の「見た目」をあとから拾うメモ */
+    const needConflictDoc = [];
     const mine = new Map(this.data.notes.map((n) => [n.id, n]));
     let added = 0;
     let updated = 0;
@@ -301,8 +326,23 @@ export class Store {
       const result = mergeNote(ours, theirs);
       if (result.changed) updated += 1;
       if (result.conflicted) conflicts += 1;
+      // 退避した本文に見た目が付いていないのは、相手側の本文がまだ手元に無いとき。
+      // いまなら保存先に相手の本文が残っているので、書き直す前に拾っておく
+      if (result.conflicted && !result.note.conflicts[0]?.doc) needConflictDoc.push(result.note);
       mine.set(theirs.id, result.note);
     });
+
+    if (needConflictDoc.length && typeof this.adapter.loadDocs === 'function') {
+      try {
+        const docs = await this.adapter.loadDocs(needConflictDoc.map((n) => n.id));
+        needConflictDoc.forEach((note) => {
+          const found = docs.get(note.id);
+          if (found && note.conflicts[0]) note.conflicts[0].doc = found;
+        });
+      } catch (err) {
+        console.warn('[fcc] 退避する本文を読めませんでした', err);
+      }
+    }
 
     // 相手が消したメモは、こちらでも消す（こちらの方が新しい編集なら残す）
     Object.entries(incoming.deleted || {}).forEach(([id, at]) => {
@@ -1054,7 +1094,14 @@ export class Store {
     return note;
   }
 
-  deleteNote(id, { withChildren = true } = {}) {
+  /**
+   * メモを消す。
+   *
+   * 「元に戻す」で本文まで戻せるよう、**消す前に本文を手元へそろえる**。
+   * 本文は開いたときに読む作りなので、読まずに消すと控えに本文が入らず、
+   * 保存先の本文だけが消えて戻せなくなる。
+   */
+  async deleteNote(id, { withChildren = true } = {}) {
     const removed = [];
     const seen = new Set();
     const collect = (noteId) => {
@@ -1065,8 +1112,15 @@ export class Store {
       if (withChildren) this.childrenOf(noteId).forEach((c) => collect(c.id));
     };
     collect(id);
-    const removedNotes = this.data.notes.filter((n) => removed.includes(n.id))
-      .map((n) => JSON.parse(JSON.stringify(n)));
+
+    const targets = this.data.notes.filter((n) => removed.includes(n.id));
+    await this.ensureDocs(targets);
+    if (targets.some((n) => this.docUnavailable(n))) {
+      // 本文が読めないまま消すと、戻せなくなる
+      this.emit({ type: 'error', message: '本文を読めなかったので、削除を取りやめました。もう一度お試しください。' });
+      return [];
+    }
+    const removedNotes = targets.map((n) => JSON.parse(JSON.stringify(n)));
     this.data.notes = this.data.notes.filter((n) => !removed.includes(n.id));
     if (!withChildren) this.data.notes.forEach((n) => { if (n.parentId === id) n.parentId = null; });
     // 墓標を残し、別タブの古い保存で復活しないようにする

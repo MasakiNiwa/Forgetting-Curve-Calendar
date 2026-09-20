@@ -144,13 +144,19 @@ export function setupReminders(store) {
     }
   };
 
+  /**
+   * 予定の数が変わりうる出来事。
+   *
+   * 個々の名前を並べると、増えたときに書き漏らす（実際 v0.16 では
+   * 復習の記録（event:rate など）を取りこぼしていて、数が古いままだった）。
+   * かたまりで見て、関係のないもの（ミッション・バックアップ・タブ）だけ外す。
+   */
+  const affectsPlan = (type) => /^(note:|event:|data:|settings:update)/.test(String(type || ''));
+
   // 設定やメモが変わったら、数え直して残す
   store.subscribe((event) => {
     if (event?.type === 'settings:update' && event.patch?.reminder) { apply(); return; }
-    if (['note:add', 'note:update', 'note:delete', 'review:rate', 'review:skip',
-      'review:postpone', 'review:undo', 'data:import', 'data:reloaded'].includes(event?.type)) {
-      schedulePlan();
-    }
+    if (affectsPlan(event?.type)) schedulePlan();
   });
 
   apply();

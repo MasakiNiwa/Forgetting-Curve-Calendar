@@ -6,8 +6,8 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/core.test.mjs tests/doc.test.mjs tests/reminders.test.mjs",
-    "test:tz": "for tz in UTC Asia/Tokyo America/Chicago Pacific/Kiritimati; do echo \"--- TZ=$tz\"; TZ=$tz node --test tests/core.test.mjs tests/doc.test.mjs tests/reminders.test.mjs || exit 1; done",
+    "test": "node --test tests/core.test.mjs tests/doc.test.mjs tests/reminders.test.mjs tests/lazydocs.test.mjs",
+    "test:tz": "for tz in UTC Asia/Tokyo America/Chicago Pacific/Kiritimati; do echo \"--- TZ=$tz\"; TZ=$tz node --test tests/core.test.mjs tests/doc.test.mjs tests/reminders.test.mjs tests/lazydocs.test.mjs || exit 1; done",
     "serve": "python3 -m http.server 8000"
   },
   "repository": {

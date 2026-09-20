@@ -302,7 +302,7 @@ test('store: 削除と復元', async () => {
   const store = await newStore();
   const parent = store.addNote({ body: '親' });
   store.addNote({ body: '子', parentId: parent.id });
-  const removed = store.deleteNote(parent.id);
+  const removed = await store.deleteNote(parent.id);
   assert.equal(store.notes.length, 0);
   store.restoreNotes(removed);
   assert.equal(store.notes.length, 2);
@@ -1871,7 +1871,7 @@ test('store: 壊れた親子関係でも削除で止まらない', async () => {
   const b = store.addNote({ body: 'B', parentId: a.id });
   // 読み込みを経ずに輪を作る（データが壊れていた場合の保険）
   store.getNote(a.id).parentId = b.id;
-  const removed = store.deleteNote(a.id);
+  const removed = await store.deleteNote(a.id);
   assert.equal(removed.length, 2);
   assert.equal(store.notes.length, 0);
 });
