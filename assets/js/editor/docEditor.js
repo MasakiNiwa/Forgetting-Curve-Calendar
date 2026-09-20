@@ -13,6 +13,7 @@
  * 本文の正本は文書データ（JSON）。素の文字は探すとき・数えるときに作る。
  */
 import { docToText, normalizeDoc, textToDoc } from '../core/doc.js';
+import { fold, foldText } from '../core/search.js';
 
 /** 道具の読み込みは 1 回だけ（2 つ目の編集画面でも待たない） */
 let libraryPromise = null;
@@ -53,7 +54,36 @@ export async function createDocEditor(mount, {
   onSelectionChange = () => {},
 } = {}) {
   const lib = await loadLibrary();
-  const { Editor, StarterKit, TaskList, TaskItem, Table, TableRow, TableCell, TableHeader, Placeholder } = lib;
+  const {
+    Editor, Extension, StarterKit, TaskList, TaskItem,
+    Table, TableRow, TableCell, TableHeader, Placeholder,
+    Plugin, PluginKey, Decoration, DecorationSet,
+  } = lib;
+
+  /**
+   * 見つかったところに色を置く。
+   *
+   * 文字そのものには触らない（飾りを 1 枚かぶせるだけ）ので、
+   * 探している最中に本文が書き換わることはない＝「元に戻す」にも残らない。
+   */
+  const findKey = new PluginKey('fccFind');
+  const FindHighlight = Extension.create({
+    name: 'fccFindHighlight',
+    addProseMirrorPlugins() {
+      return [new Plugin({
+        key: findKey,
+        state: {
+          init: () => DecorationSet.empty,
+          apply(tr, old) {
+            const next = tr.getMeta(findKey);
+            if (next) return next;
+            return old.map(tr.mapping, tr.doc);
+          },
+        },
+        props: { decorations: (state) => findKey.getState(state) },
+      })];
+    },
+  });
 
   const extensions = [
     StarterKit.configure({
@@ -92,6 +122,7 @@ export async function createDocEditor(mount, {
     TableHeader,
     TableCell,
   ];
+  extensions.push(FindHighlight);
   if (placeholder) extensions.push(Placeholder.configure({ placeholder }));
 
   const content = normalizeDoc(doc) || textToDoc(text);
@@ -281,46 +312,109 @@ export async function createDocEditor(mount, {
 
     /* ------------------------------------------- 検索と置換 */
 
-    /** カーソルの先から次を探す（見つからなければ先頭から） */
-    findNext(query) {
-      if (!query) return null;
+    /**
+     * 見つかったところを全部返す。
+     *
+     * ふだんは「そろえて」探す（大文字小文字・全角半角・カタカナひらがなを同じに扱う）。
+     * メモを探すとき（core/search.js）と同じそろえ方なので、
+     * 一覧で見つかったメモを開いて、同じ言葉で探し直しても取りこぼさない。
+     */
+    findMatches(query, { exact = false } = {}) {
+      const needle = String(query ?? '');
+      if (!needle) return [];
       const { flat, map } = flatten();
-      const { to } = editor.state.selection;
-      // いまのカーソルより後ろにある文字から探す
-      let start = map.findIndex((pos) => pos >= to);
-      if (start < 0) start = flat.length;
-      let at = flat.indexOf(query, start);
-      if (at === -1) at = flat.indexOf(query, 0);
-      if (at === -1) return null;
-      const range = { from: map[at], to: map[at + query.length - 1] + 1 };
-      editor.chain().focus().setTextSelection(range).scrollIntoView().run();
-      return range;
+      const ranges = [];
+      if (exact) {
+        let at = flat.indexOf(needle);
+        while (at !== -1) {
+          ranges.push({ from: map[at], to: map[at + needle.length - 1] + 1 });
+          at = flat.indexOf(needle, at + needle.length);
+        }
+        return ranges;
+      }
+      // そろえた形で探し、当たった場所を元の文字へ戻す
+      const folded = fold(flat);
+      const q = foldText(needle);
+      if (!q) return [];
+      let at = folded.text.indexOf(q);
+      while (at !== -1) {
+        const fromFlat = folded.map[at];
+        const toFlat = folded.map[at + q.length];
+        if (fromFlat === undefined || toFlat === undefined || toFlat <= fromFlat) break;
+        ranges.push({ from: map[fromFlat], to: map[toFlat - 1] + 1 });
+        at = folded.text.indexOf(q, at + q.length);
+      }
+      return ranges;
     },
 
-    /** 選んでいるところが検索語と同じなら置き換える */
-    replaceCurrent(query, replacement) {
-      if (!query) return false;
-      const { from, to } = editor.state.selection;
-      if (from === to) return false;
-      if (editor.state.doc.textBetween(from, to, '', '') !== query) return false;
-      editor.chain().focus().insertContentAt({ from, to }, replacement || '').run();
+    /** いまのカーソルのすぐ後ろにある当たりは何番目か */
+    matchIndexAfterCaret(ranges) {
+      const { to } = editor.state.selection;
+      const found = ranges.findIndex((r) => r.from >= to - 1);
+      return found === -1 ? 0 : found;
+    },
+
+    /** 当たったところに色を置く（本文は書き換えない） */
+    highlight(ranges, current = -1) {
+      const decos = ranges.map((r, i) => Decoration.inline(r.from, r.to, {
+        class: i === current ? 'fcc-find fcc-find--on' : 'fcc-find',
+      }));
+      const set = decos.length ? DecorationSet.create(editor.state.doc, decos) : DecorationSet.empty;
+      editor.view.dispatch(editor.state.tr.setMeta(findKey, set));
+    },
+
+    clearHighlight() {
+      editor.view.dispatch(editor.state.tr.setMeta(findKey, DecorationSet.empty));
+    },
+
+    /**
+     * その場所を画面に入れる（カーソルは動かさない）。
+     * 探している最中は入力欄にカーソルを置いたままにしたいので、選び直さない。
+     */
+    revealRange(range) {
+      if (!range) return;
+      let coords;
+      try { coords = editor.view.coordsAtPos(range.from); } catch { return; }
+      let el = mount.parentElement;
+      while (el && el !== document.body) {
+        const style = window.getComputedStyle(el);
+        if (/(auto|scroll)/.test(style.overflowY)) break;
+        el = el.parentElement;
+      }
+      const margin = 80;
+      if (!el || el === document.body) {
+        if (coords.top < margin || coords.bottom > window.innerHeight - margin) {
+          window.scrollBy(0, coords.top - window.innerHeight / 2);
+        }
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      if (coords.top < rect.top + margin) el.scrollTop -= (rect.top + margin) - coords.top;
+      else if (coords.bottom > rect.bottom - margin) el.scrollTop += coords.bottom - (rect.bottom - margin);
+    },
+
+    /** そこへカーソルを移す（検索を閉じるときなど） */
+    placeCaret(range) {
+      if (!range) return;
+      handle.select(range.from, range.to);
+    },
+
+    /** その 1 か所を置き換える */
+    replaceRange(range, replacement) {
+      if (!range) return false;
+      const tr = editor.state.tr;
+      if (replacement) tr.insertText(replacement, range.from, range.to);
+      else tr.delete(range.from, range.to);
+      editor.view.dispatch(tr);
       return true;
     },
 
     /** すべて置き換える（1 回の「元に戻す」で戻せる） */
-    replaceAll(query, replacement) {
-      if (!query) return 0;
-      const { flat, map } = flatten();
-      const ranges = [];
-      let at = flat.indexOf(query);
-      while (at !== -1) {
-        ranges.push({ from: map[at], to: map[at + query.length - 1] + 1 });
-        at = flat.indexOf(query, at + query.length);
-      }
-      if (!ranges.length) return 0;
+    replaceRanges(ranges, replacement) {
+      if (!ranges?.length) return 0;
       const tr = editor.state.tr;
       // 後ろから直すと、前の位置がずれない
-      ranges.reverse().forEach(({ from, to }) => {
+      [...ranges].reverse().forEach(({ from, to }) => {
         if (replacement) tr.insertText(replacement, from, to);
         else tr.delete(from, to);
       });

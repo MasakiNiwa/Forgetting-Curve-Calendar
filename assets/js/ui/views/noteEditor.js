@@ -535,60 +535,190 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
 
   /* ---------------------------------------------------------- 検索置換 */
 
-  let findState = { query: '', replacement: '' };
+  /**
+   * メモの中を探す。
+   *
+   * 見つかったところは全部に色が付き、いま見ているものだけ濃くなる。
+   * 入力欄にカーソルを置いたまま ↑↓（Enter / Shift+Enter）で行き来できる。
+   * 置換はひと目で分かるよう、開いたときだけ 2 段目に出す。
+   */
+  const find = {
+    query: '',
+    replacement: '',
+    exact: false,      // 大文字小文字・かなを区別するか
+    showReplace: false,
+    ranges: [],
+    index: 0,
+    timer: null,
+  };
+  let findUI = null;
 
   function toggleFind(force) {
     const show = force ?? findBar.hidden;
-    findBar.hidden = !show;
-    if (!show) return;
+    if (!show) { closeFind(); return; }
+    if (findBar.hidden) buildFindBar();
+    findBar.hidden = false;
+    runFind({ keepIndex: true });
+    setTimeout(() => { findUI?.query.focus(); findUI?.query.select(); }, 30);
+  }
+
+  function closeFind() {
+    clearTimeout(find.timer);
+    find.timer = null;
+    findBar.hidden = true;
+    surface?.clearHighlight();
+    // いま見ていたところへカーソルを置いて、そのまま書き続けられるようにする
+    const range = find.ranges[find.index];
+    if (range) surface?.placeCaret(range);
+    else focusBody();
+    find.ranges = [];
+  }
+
+  function buildFindBar() {
     clear(findBar);
-    const queryInput = h('input', {
+    const query = h('input', {
       class: 'input ed__find-input',
-      type: 'search',
-      placeholder: '検索',
-      value: findState.query,
-      onInput: (e) => { findState.query = e.target.value; },
+      type: 'text',
+      placeholder: 'メモ内を検索',
+      value: find.query,
+      'aria-label': 'メモ内を検索',
+      enterkeyhint: 'search',
+      onInput: (e) => {
+        find.query = e.target.value;
+        clearTimeout(find.timer);
+        find.timer = setTimeout(() => runFind(), 120);
+      },
       onKeyDown: (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); findNext(); }
-        if (e.key === 'Escape') { e.preventDefault(); toggleFind(false); focusBody(); }
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+        if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
       },
     });
+    const count = h('span', { class: 'ed__find-count' });
     const replaceInput = h('input', {
       class: 'input ed__find-input',
       type: 'text',
-      placeholder: '置換',
-      value: findState.replacement,
-      onInput: (e) => { findState.replacement = e.target.value; },
+      placeholder: '置き換える言葉',
+      value: find.replacement,
+      'aria-label': '置き換える言葉',
+      onInput: (e) => { find.replacement = e.target.value; },
+      onKeyDown: (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') { e.preventDefault(); replaceCurrent(); }
+        if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+      },
     });
-    findBar.append(
-      queryInput,
+
+    const exactBtn = iconButton(icon('format', { size: 18 }), {
+      label: '大文字・かなを区別する',
+      className: 'icon-btn icon-btn--sm',
+      onClick: () => {
+        find.exact = !find.exact;
+        exactBtn.setAttribute('aria-pressed', String(find.exact));
+        runFind();
+      },
+    });
+    exactBtn.setAttribute('aria-pressed', String(find.exact));
+
+    const replaceBtn = iconButton(icon('replace', { size: 18 }), {
+      label: '置換を表示',
+      className: 'icon-btn icon-btn--sm',
+      onClick: () => {
+        find.showReplace = !find.showReplace;
+        replaceRow.hidden = !find.showReplace;
+        replaceBtn.setAttribute('aria-pressed', String(find.showReplace));
+        if (find.showReplace) setTimeout(() => replaceInput.focus(), 20);
+      },
+    });
+    replaceBtn.setAttribute('aria-pressed', String(find.showReplace));
+
+    const row = h('div', { class: 'ed__find-row' },
+      h('span', { class: 'ed__find-icon', html: icon('search', { size: 18 }) }),
+      query,
+      count,
+      exactBtn,
+      iconButton(icon('chevronDown', { size: 18 }), {
+        label: '前へ',
+        className: 'icon-btn icon-btn--sm ed__find-prev',
+        onClick: () => step(-1),
+      }),
+      iconButton(icon('chevronDown', { size: 18 }), {
+        label: '次へ',
+        className: 'icon-btn icon-btn--sm',
+        onClick: () => step(1),
+      }),
+      replaceBtn,
+      iconButton(icon('close', { size: 18 }), {
+        label: '検索を閉じる',
+        className: 'icon-btn icon-btn--sm',
+        onClick: () => closeFind(),
+      }));
+
+    const replaceRow = h('div', { class: 'ed__find-row ed__find-row--replace', hidden: !find.showReplace },
+      h('span', { class: 'ed__find-icon', html: icon('replace', { size: 18 }) }),
       replaceInput,
-      button('次へ', { className: 'btn btn--text btn--sm', onClick: () => findNext() }),
-      button('置換', { className: 'btn btn--text btn--sm', onClick: () => replaceCurrent() }),
-      button('すべて', { className: 'btn btn--text btn--sm', onClick: () => replaceAll() }),
-      iconButton(icon('close', { size: 18 }), { label: '検索を閉じる', onClick: () => toggleFind(false) }),
-    );
-    setTimeout(() => queryInput.focus(), 30);
+      button('置き換える', { className: 'btn btn--text btn--sm', onClick: () => replaceCurrent() }),
+      button('すべて', { className: 'btn btn--text btn--sm', onClick: () => replaceAll() }));
+
+    findBar.append(row, replaceRow);
+    findUI = { query, count, replaceInput, replaceRow };
   }
 
-  function findNext() {
-    if (!surface || !findState.query) return;
-    const found = surface.findNext(findState.query);
-    if (!found) { toast('見つかりませんでした'); return; }
-    updateStats();
+  /** 探し直して、色と数字を出し直す */
+  function runFind({ keepIndex = false } = {}) {
+    if (!surface || findBar.hidden) return;
+    const ranges = find.query ? surface.findMatches(find.query, { exact: find.exact }) : [];
+    find.ranges = ranges;
+    if (!ranges.length) find.index = 0;
+    else if (keepIndex) find.index = Math.min(find.index, ranges.length - 1);
+    else find.index = surface.matchIndexAfterCaret(ranges);
+    surface.highlight(ranges, ranges.length ? find.index : -1);
+    if (ranges.length) surface.revealRange(ranges[find.index]);
+    updateFindCount();
+  }
+
+  function updateFindCount() {
+    if (!findUI) return;
+    const total = find.ranges.length;
+    findUI.count.textContent = find.query
+      ? (total ? `${find.index + 1} / ${total}` : '0 件')
+      : '';
+    findUI.count.dataset.miss = find.query && !total ? 'true' : '';
+    findUI.query.dataset.miss = find.query && !total ? 'true' : '';
+  }
+
+  /** 次・前の当たりへ */
+  function step(delta) {
+    if (!surface) return;
+    if (!find.ranges.length) { runFind(); return; }
+    const total = find.ranges.length;
+    find.index = (find.index + delta + total) % total;
+    surface.highlight(find.ranges, find.index);
+    surface.revealRange(find.ranges[find.index]);
+    updateFindCount();
   }
 
   function replaceCurrent() {
-    if (!surface || !findState.query) return;
-    if (surface.replaceCurrent(findState.query, findState.replacement)) onSurfaceChange();
-    findNext();
+    if (!surface || !find.ranges.length) return;
+    const range = find.ranges[find.index];
+    const at = find.index;
+    surface.replaceRange(range, find.replacement);
+    onSurfaceChange();
+    // 置き換えたぶん位置がずれるので、探し直してから次へ進む
+    runFind({ keepIndex: true });
+    if (find.ranges.length) {
+      find.index = Math.min(at, find.ranges.length - 1);
+      surface.highlight(find.ranges, find.index);
+      surface.revealRange(find.ranges[find.index]);
+      updateFindCount();
+    }
   }
 
   function replaceAll() {
-    if (!surface || !findState.query) return;
-    const count = surface.replaceAll(findState.query, findState.replacement);
-    if (!count) { toast('見つかりませんでした'); return; }
+    if (!surface || !find.ranges.length) return;
+    const count = surface.replaceRanges(find.ranges, find.replacement);
     onSurfaceChange();
+    runFind({ keepIndex: true });
     toast(`${count} か所を置き換えました（元に戻せます）`);
   }
 

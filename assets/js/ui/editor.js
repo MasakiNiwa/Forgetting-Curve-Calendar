@@ -130,7 +130,7 @@ export function openNoteDetail(store, noteId) {
         h('span', {}, recallCue(note))) : null,
 
       note.body ? h('div', { class: 'detail-body' },
-        noteBodyView(note, store.settings, { className: 'detail-body__text' })) : null,
+        noteBodyView(note, { className: 'detail-body__text' })) : null,
 
       h('div', { class: 'note-card__actions', style: { marginTop: '14px' } },
         button('編集', {

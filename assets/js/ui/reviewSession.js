@@ -91,7 +91,7 @@ export function startReviewSession(store, options = {}) {
         // 明示的なタイトルがあるときだけ見出しを添える（本文と重複させない）
         note.cue && note.title ? h('div', { class: 'session__answer-label' }, note.title) : null,
         text
-          ? noteBodyView(note, store.settings, { text, className: 'session__body' })
+          ? noteBodyView(note, { text, className: 'session__body' })
           : h('p', { class: 'session__body' }, '（本文はありません）'),
       ]);
       append(clear(actions), [

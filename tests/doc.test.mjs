@@ -291,12 +291,38 @@ test('store: 中身が同じ文書データでは、更新したことにしな�
   assert.equal(store.getNote(note.id).contentUpdatedAt, before);
 });
 
-test('migrations: v5 のデータは、本文に触れずに v6 になる', () => {
+test('migrations: 古いメモは、読み込みのときに文書データへ移す', () => {
   const data = migrate({
     schemaVersion: 5,
-    notes: [{ id: 'n1', body: '# むかしのメモ', events: [] }],
+    notes: [{
+      id: 'n1',
+      body: '# むかしのメモ\n\n- [x] 済んだこと\n- [ ] これから\n\n式は 2 * 3 = 6。',
+      events: [],
+    }],
+    settings: { markdown: false, editorMode: 'source', theme: 'dark' },
   });
   assert.equal(data.schemaVersion, SCHEMA_VERSION);
-  assert.equal(data.notes[0].body, '# むかしのメモ');
-  assert.equal(data.notes[0].doc, undefined);
+
+  const note = data.notes[0];
+  assert.equal(note.doc.content[0].type, 'heading');
+  assert.equal(note.doc.content[1].type, 'taskList');
+  // 素の文字は、記号を外した形になる
+  assert.equal(note.body, 'むかしのメモ\n済んだこと\nこれから\n式は 2 * 3 = 6。');
+  // 読み替えられて困る文字は、そのまま残る
+  assert.match(note.body, /2 \* 3 = 6/);
+
+  // 要らなくなった設定は持ち越さない
+  assert.equal('markdown' in data.settings, false);
+  assert.equal('editorMode' in data.settings, false);
+  assert.equal(data.settings.theme, 'dark');
+});
+
+test('migrations: すでに文書データを持つメモには触れない', () => {
+  const original = doc(para('そのまま'));
+  const data = migrate({
+    schemaVersion: 6,
+    notes: [{ id: 'n1', body: 'そのまま', doc: original, events: [] }],
+    settings: {},
+  });
+  assert.deepEqual(data.notes[0].doc, original);
 });

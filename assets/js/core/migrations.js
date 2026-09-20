@@ -6,6 +6,7 @@
  */
 import { SCHEMA_VERSION } from './config.js';
 import { getSpread, localDayOf, seedFromString } from './curve.js';
+import { docToText, markdownToDoc } from './doc.js';
 
 /**
  * v1 → v2
@@ -122,12 +123,38 @@ function v5ToV6(data) {
   return { ...data, schemaVersion: 6 };
 }
 
+/**
+ * v6 → v7
+ * 本文を、全部のメモで「文書データ」に揃える。
+ *
+ * v0.12 では「触ったメモから順に」文書データへ移していたが、
+ * そのために「古いメモを Markdown として読む」という設定を残す必要があった。
+ * 読む人にとっては、どちらで保存されているかは知らなくてよいこと。
+ * ここで一度だけ全部を読み直し、設定ごと無くす。
+ *
+ * 読み直すのは記号の解釈だけで、書いてあった文字は落とさない
+ * （読めない書き方は、記号もろとも「ただの文字」として残る）。
+ */
+function v6ToV7(data) {
+  const notes = (Array.isArray(data.notes) ? data.notes : []).map((note) => {
+    if (!note || typeof note !== 'object' || note.doc) return note;
+    const doc = markdownToDoc(typeof note.body === 'string' ? note.body : '');
+    return { ...note, doc, body: docToText(doc) };
+  });
+  // 要らなくなった設定は持ち越さない
+  const settings = { ...(data.settings && typeof data.settings === 'object' ? data.settings : {}) };
+  delete settings.markdown;
+  delete settings.editorMode;
+  return { ...data, schemaVersion: 7, notes, settings };
+}
+
 const MIGRATIONS = {
   1: v1ToV2,
   2: v2ToV3,
   3: v3ToV4,
   4: v4ToV5,
   5: v5ToV6,
+  6: v6ToV7,
 };
 
 export function migrate(raw) {

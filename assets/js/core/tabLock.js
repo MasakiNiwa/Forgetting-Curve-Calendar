@@ -12,18 +12,29 @@
  *   - 「このタブで編集する」を押すと、持ち主に譲るよう頼み、
  *     相手が保存を終えてから受け取る（返事がなければ、しばらく待って引き継ぐ）
  *   - 印が古くなっていれば（タブが閉じられた等）、そのまま引き継ぐ
+ *
+ * 「時間で古さを測る」だけだと、閉じてすぐ開き直したときに
+ * まだ新しい印が残っていて、自分ひとりなのに「見るだけ」になってしまう。
+ * そこで開くときは、まず**返事を待つ**（ping / pong）。
+ * 閉じたタブは答えられないので、返事が無ければそのまま引き継ぐ。
  */
 
 /** 持ち主の印を置くキー */
 const OWNER_KEY = 'fcc.owner.v1';
 /** 譲ってほしいという合図を置くキー */
 const REQUEST_KEY = 'fcc.owner.request.v1';
+/** 「そこにいますか」と尋ねるキー */
+const PING_KEY = 'fcc.owner.ping.v1';
+/** 「います」と答えるキー */
+const PONG_KEY = 'fcc.owner.pong.v1';
 /** 生存確認を更新する間隔 */
 export const HEARTBEAT_MS = 4000;
 /** これを過ぎた印は「閉じたタブのもの」とみなす */
 export const STALE_MS = 12000;
 /** 譲ってもらうときに待つ時間 */
 export const HANDOVER_MS = 1200;
+/** 「そこにいますか」の返事を待つ時間 */
+export const PROBE_MS = 350;
 
 export function makeTabId() {
   const rand = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -113,6 +124,38 @@ export class TabLock {
     return true;
   }
 
+  /**
+   * 開いたときに呼ぶ（返事を待ってから決める）。
+   *
+   * 印が残っていても、答えが返らなければ「閉じたタブのもの」として引き継ぐ。
+   * 生きているタブは storage の合図を受けて、すぐに返事を書く。
+   */
+  async claimWithProbe({ wait = PROBE_MS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+    const current = this.currentOwner();
+    if (!current || current.id === this.id) return this.claim();
+
+    const at = this.now();
+    this.write(PING_KEY, { id: this.id, at });
+    await sleep(wait);
+
+    const pong = this.read(PONG_KEY);
+    const answered = pong && pong.id === current.id && Number(pong.at) >= at;
+    if (answered) {
+      this.setOwner(false, 'taken');
+      return false;
+    }
+    // 返事が無い＝もう居ない。印を引き継ぐ
+    this.write(OWNER_KEY, { id: this.id, at: this.now() });
+    this.setOwner(true, 'claimed');
+    return true;
+  }
+
+  /** 「そこにいますか」に答える */
+  answerPing() {
+    if (!this.owner) return false;
+    return this.write(PONG_KEY, { id: this.id, at: this.now() });
+  }
+
   /** 持ち主であることを知らせ続ける */
   beat() {
     if (!this.owner) return;
@@ -165,6 +208,12 @@ export class TabLock {
    * @returns {'release'|'lost'|null} 何が起きたか
    */
   handleSignal(key) {
+    if (key === PING_KEY) {
+      // 生きているタブだけが答える（答えなければ、相手が引き継ぐ）
+      this.answerPing();
+      return null;
+    }
+    if (key === PONG_KEY) return null;
     if (key === REQUEST_KEY) {
       const request = this.read(REQUEST_KEY);
       if (this.owner && request && request.id !== this.id && !request.released) return 'release';
@@ -184,9 +233,15 @@ export class TabLock {
     return null;
   }
 
-  start() {
-    this.claim();
+  /**
+   * 見張りを始める。
+   * 返事を待つぶん、ほんの少し（PROBE_MS）かかることがある。
+   */
+  async start({ probe = true, ...options } = {}) {
+    if (probe) await this.claimWithProbe(options);
+    else this.claim();
     this.timer = setInterval(() => this.beat(), HEARTBEAT_MS);
+    return this.owner;
   }
 
   stop() {

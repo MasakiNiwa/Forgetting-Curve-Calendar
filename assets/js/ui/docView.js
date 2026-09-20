@@ -10,7 +10,7 @@
  */
 import { h } from './dom.js';
 import { normalizeDoc } from '../core/doc.js';
-import { bodyView } from './markdownView.js';
+import { markdownView } from './markdownView.js';
 
 const MARK_TAG = { bold: 'strong', italic: 'em', strike: 's', underline: 'u' };
 
@@ -146,17 +146,17 @@ export function docView(raw, { className = '' } = {}) {
 /**
  * メモの本文を出す。
  *
- * 文書データを持つメモはそれを、まだ持たない（v0.11 以前の）メモは
- * これまでどおり Markdown として出す。
+ * v0.14 で、保存されている本文はすべて文書データに揃えた（migrations の v6→v7）。
+ * それでも `doc` が無いものが来たら（読み込みの途中や、古い形のままの取り込み）、
+ * 書いてあった文字を Markdown として読んで出す。読む人に空白を見せないため。
  *
  * @param {object} note
- * @param {object} settings
- * @param {{className?:string, plainClass?:string, text?:string}} options
+ * @param {{className?:string, text?:string}} options
  */
-export function noteBodyView(note, settings, options = {}) {
+export function noteBodyView(note, options = {}) {
   if (note?.doc) return docView(note.doc, { className: options.className });
   const text = options.text !== undefined ? options.text : (note?.body || '');
-  return bodyView(text, settings, options);
+  return markdownView(text, { className: options.className });
 }
 
 /** 文書データを持つメモか（表示の出しわけ用） */

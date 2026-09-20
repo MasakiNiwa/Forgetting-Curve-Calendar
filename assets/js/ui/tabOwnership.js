@@ -9,7 +9,7 @@ import { h, button } from './dom.js';
 import { icon } from './icons.js';
 import { toast } from './overlays.js';
 
-export function setupTabOwnership(store, lock) {
+export async function setupTabOwnership(store, lock) {
   let banner = null;
 
   // 譲るときは、書きかけを必ず保存してから手を離す
@@ -52,7 +52,8 @@ export function setupTabOwnership(store, lock) {
     store.emit({ type: 'view:refresh' });
   }
 
-  lock.start();
+  // 印が残っていても、返事が無ければ引き継ぐ（閉じてすぐ開き直したとき用）
+  await lock.start();
   apply(lock.owner, { quiet: true });
 
   // 別タブからの合図（持ち主の交代・譲ってほしいという依頼）
@@ -98,7 +99,7 @@ export function setupTabOwnership(store, lock) {
       lock.beat();
       return;
     }
-    if (!lock.currentOwner() && lock.claim()) {
+    if (!lock.currentOwner() && await lock.claimWithProbe()) {
       await store.reload();
       apply(true);
       store.emit({ type: 'view:refresh' });

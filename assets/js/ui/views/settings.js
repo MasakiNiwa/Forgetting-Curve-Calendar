@@ -55,14 +55,6 @@ export function renderSettings(store) {
       desc: 'メモを書いた日に印を付けます。',
       checked: s.showCreatedOnCalendar,
       onChange: (v) => store.updateSettings({ showCreatedOnCalendar: v }),
-    }),
-    h('div', { class: 'divider' }),
-    switchRow({
-      title: '古いメモを Markdown として読む',
-      desc: 'v0.11 以前に書いたメモの「# 」や「- 」を、読むときだけ整えて表示します。'
-        + '編集画面で開いて書き直すと、見たままの形で保存されます。',
-      checked: s.markdown,
-      onChange: (v) => store.updateSettings({ markdown: v }),
     })));
 
   /* ---------------- 忘却曲線 ---------------- */

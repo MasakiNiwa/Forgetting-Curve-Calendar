@@ -1473,15 +1473,62 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .ed__cue-hint[hidden] { display: none; }
 
+/* メモの中を探すところ（1 段目が検索、開いたときだけ 2 段目に置換） */
 .ed__find {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--fcc-outline-variant);
+  background: var(--fcc-surface-container-low);
   flex: none;
-  overflow-x: auto;
 }
 .ed__find[hidden] { display: none; }
-.ed__find-input { min-width: 7em; flex: 1; padding: 8px 10px; }
+.ed__find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ed__find-row[hidden] { display: none; }
+.ed__find-icon {
+  display: flex;
+  flex: none;
+  padding: 0 2px;
+  color: var(--fcc-on-surface-variant);
+}
+.ed__find-input {
+  flex: 1;
+  min-width: 5em;
+  padding: 8px 10px;
+}
+.ed__find-input[data-miss="true"] { border-color: var(--fcc-error); }
+.ed__find-count {
+  flex: none;
+  min-width: 4.5em;
+  text-align: right;
+  font-size: .74rem;
+  color: var(--fcc-on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+.ed__find-count[data-miss="true"] { color: var(--fcc-error); }
+/* 「前へ」は同じ矢印を上下で使い分ける */
+.ed__find-prev { transform: rotate(180deg); }
+.icon-btn--sm { width: 36px; height: 36px; flex: none; }
+.icon-btn--sm[aria-pressed="true"] {
+  background: var(--fcc-secondary-container);
+  color: var(--fcc-on-secondary-container);
+}
+
+/* 見つかったところ（本文には触らず、色だけ重ねている） */
+.fcc-find {
+  background: var(--fcc-tertiary-container);
+  color: var(--fcc-on-tertiary-container);
+  border-radius: 3px;
+}
+.fcc-find--on {
+  background: var(--fcc-primary);
+  color: var(--fcc-on-primary);
+}
 
 .ed__shortcuts {
   display: flex;

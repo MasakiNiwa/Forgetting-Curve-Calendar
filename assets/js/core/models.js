@@ -36,7 +36,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showCreatedOnCalendar: true,
   defaultExportFormat: 'markdown',
   missionsEnabled: true,      // デイリーミッション（毎日の小さな目標）
-  markdown: true,             // v0.11 以前のメモを Markdown として表示する
 });
 
 /** 墓標（削除済みメモの id -> 削除時刻）。古すぎるものは捨てる。 */
@@ -265,7 +264,6 @@ export function normalizeSettings(raw) {
   s.hideBodyUntilRecall = s.hideBodyUntilRecall !== false;
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
   s.missionsEnabled = s.missionsEnabled !== false;
-  s.markdown = s.markdown !== false;
   s.customIntervals = sanitizeIntervals(s.customIntervals);
   s.spreadId = getSpread(s.spreadId).id;
   const limit = Number(s.overdueDailyLimit);
