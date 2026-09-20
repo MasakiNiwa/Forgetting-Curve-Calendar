@@ -20,6 +20,14 @@ const para = (text, marks) => ({
 const doc = (...content) => ({ type: 'doc', content });
 const bold = [{ type: 'bold' }];
 
+/** そのメモを「少し前に書いたもの」にする（時刻の競り合いを避ける） */
+function ageNote(note, seconds = 60) {
+  const at = new Date(Date.now() - seconds * 1000).toISOString();
+  note.updatedAt = at;
+  note.contentUpdatedAt = at;
+  return note;
+}
+
 /** 保存先はそのままに、読み込み直したところから始める */
 async function reopen(adapter) {
   const store = new Store(adapter);
@@ -116,6 +124,9 @@ test('lazyDocs: 別タブの新しい本文を取り込むと、素の文字と�
   const a = await reopen(adapter);
   await a.ensureDoc(a.getNote(note.id));
   assert.equal(docToText(a.getNote(note.id).doc), 'KEEP');
+  // 「どちらが新しいか」は時刻で決まる。同じミリ秒に並ぶと決められないので、
+  // A の側を少しだけ古くしておく（速い機械でも同じ結果になるように）
+  ageNote(a.getNote(note.id));
 
   // B が書き換えて保存する
   const b = await reopen(adapter);
@@ -140,8 +151,9 @@ test('lazyDocs: 食い違った本文は、見た目ごと退避する', async (
 
   const a = await reopen(adapter);
   await a.ensureDoc(a.getNote(note.id));
-  // A も B も、別々に書き換える
+  // A も B も、別々に書き換える（B の方をあとに書いたことにする）
   a.updateNote(note.id, { doc: doc(para('MINE', bold)), body: 'MINE' });
+  ageNote(a.getNote(note.id));
 
   const b = await reopen(adapter);
   b.updateNote(note.id, { doc: doc(para('THEIRS')), body: 'THEIRS' });
