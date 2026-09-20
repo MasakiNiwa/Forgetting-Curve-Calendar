@@ -14,8 +14,10 @@ import {
   seedFromString, spreadIntervals,
 } from '../assets/js/core/curve.js';
 import {
-  DEFAULT_SETTINGS, bodyPreview, createNote, displayTitle, makeEventId, normalizeData, recallCue,
+  DEFAULT_SETTINGS, bodyPreview, bookmarkHost, bookmarkInitial, bookmarkSeedDoc, createNote,
+  displayTitle, makeEventId, normalizeBookmarks, normalizeData, recallCue, safeBookmarkUrl,
 } from '../assets/js/core/models.js';
+import { normalizeDoc } from '../assets/js/core/doc.js';
 import { migrate } from '../assets/js/core/migrations.js';
 import { SCHEMA_VERSION } from '../assets/js/core/config.js';
 import {
@@ -1874,4 +1876,106 @@ test('store: 壊れた親子関係でも削除で止まらない', async () => {
   const removed = await store.deleteNote(a.id);
   assert.equal(removed.length, 2);
   assert.equal(store.notes.length, 0);
+});
+
+/* ------------------------------------------------------------------ */
+/* 学びのとびら（リンク集・v1.1）                                       */
+/* ------------------------------------------------------------------ */
+
+test('bookmarks: 開けるリンクだけを受け取る', () => {
+  assert.equal(safeBookmarkUrl('https://example.com/a'), 'https://example.com/a');
+  // 「example.com」のように書かれたものは https を足す
+  assert.equal(safeBookmarkUrl('example.com/learn'), 'https://example.com/learn');
+  // 開くと何が起きるか分からないものは受け取らない
+  assert.equal(safeBookmarkUrl('javascript:alert(1)'), null);
+  assert.equal(safeBookmarkUrl('file:///etc/passwd'), null);
+  assert.equal(safeBookmarkUrl(''), null);
+
+  assert.equal(bookmarkHost('https://www.example.com/x'), 'example.com');
+  assert.equal(bookmarkInitial({ emoji: '📗', title: '本' }), '📗');
+  assert.equal(bookmarkInitial({ title: '統計' }), '統');
+  assert.equal(bookmarkInitial({ url: 'https://example.com/' }), 'e');
+});
+
+test('bookmarks: 名前が無ければサイト名になる／壊れた値は捨てる', () => {
+  const list = normalizeBookmarks([
+    { url: 'https://example.com/x' },
+    { url: 'javascript:alert(1)', title: 'わな' },
+    null,
+    { url: 'https://example.com/y', title: '色の無い名前', color: 'まぜこぜ', emoji: 'ながい絵文字' },
+  ]);
+  assert.equal(list.length, 2);
+  assert.equal(list[0].title, 'example.com');
+  assert.equal(list[1].color, 'blue', '知らない色は既定に戻す');
+  assert.equal([...list[1].emoji].length, 1, '絵文字は 1 文字まで');
+});
+
+test('store: とびらのリンクを足す・並べ替える・戻す', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+
+  const a = store.addBookmark({ url: 'example.com/a', title: 'A' });
+  const b = store.addBookmark({ url: 'example.com/b', title: 'B' });
+  assert.equal(store.bookmarks.length, 2);
+  assert.equal(store.addBookmark({ url: 'とんでもない' }), null);
+
+  assert.equal(store.moveBookmark(b.id, -1), true);
+  assert.deepEqual(store.bookmarks.map((x) => x.title), ['B', 'A']);
+  assert.equal(store.moveBookmark(b.id, -1), false, '先頭より上へは動かない');
+
+  const removed = store.removeBookmark(b.id);
+  assert.equal(removed.index, 0);
+  assert.equal(store.bookmarks.length, 1);
+  store.restoreBookmark(removed.bookmark, removed.index);
+  assert.deepEqual(store.bookmarks.map((x) => x.title), ['B', 'A'], '元の場所へ戻る');
+
+  // URL が壊れる直しは受け付けない（開けないリンクを作らない）
+  assert.equal(store.updateBookmark(a.id, { url: 'javascript:void(0)' }), null);
+  assert.equal(store.getBookmark(a.id).url, 'https://example.com/a');
+});
+
+test('store: 今日はこれ（いちばん長く開いていないリンク）', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const a = store.addBookmark({ url: 'example.com/a', title: 'A' });
+  const b = store.addBookmark({ url: 'example.com/b', title: 'B' });
+
+  // まだ開いていないものが先（足した順）
+  assert.equal(store.suggestedBookmark().id, a.id);
+  store.markBookmarkOpened(a.id, '2026-01-01T00:00:00.000Z');
+  assert.equal(store.suggestedBookmark().id, b.id, 'まだ開いていない方');
+  store.markBookmarkOpened(b.id, '2026-02-01T00:00:00.000Z');
+  assert.equal(store.suggestedBookmark().id, a.id, '前に開いた方');
+
+  store.markBookmarkNoted(a.id);
+  assert.deepEqual(store.bookmarkStats(), { count: 2, opens: 2, notes: 1 });
+});
+
+test('store: リンク集はバックアップにも入り、別タブのぶんも取り込む', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.load();
+  const a = store.addBookmark({ url: 'example.com/a', title: 'A', note: '毎朝' });
+
+  // 書き出し → 読み直しで残る
+  const dump = JSON.parse(JSON.stringify(store.exportData()));
+  const back = normalizeData(dump);
+  assert.equal(back.bookmarks.length, 1);
+  assert.equal(back.bookmarks[0].note, '毎朝');
+
+  // 別のタブが足したもの（こちらに無いもの）は後ろへ足す
+  const changed = store.mergeBookmarks([
+    { id: a.id, url: 'https://example.com/a', title: 'A', updatedAt: '2000-01-01T00:00:00.000Z' },
+    { id: 'b_other', url: 'https://example.com/z', title: 'Z' },
+  ]);
+  assert.equal(changed, true);
+  assert.deepEqual(store.bookmarks.map((x) => x.title), ['A', 'Z']);
+  assert.equal(store.getBookmark(a.id).title, 'A', '古い方では上書きしない');
+});
+
+test('models: リンクから書き始めるメモは、出どころを本文の頭に置く', () => {
+  const seed = bookmarkSeedDoc({ title: '記憶のしくみ', url: 'https://example.com/memory' });
+  const clean = normalizeDoc(seed);
+  assert.equal(clean.content[0].content[0].text, '記憶のしくみ');
+  assert.equal(clean.content[0].content[0].marks[0].attrs.href, 'https://example.com/memory');
+  assert.equal(clean.content.length, 2, '続きを書くための空行がある');
 });

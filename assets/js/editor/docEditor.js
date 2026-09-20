@@ -14,6 +14,7 @@
  */
 import { docToText, normalizeDoc, textToDoc } from '../core/doc.js';
 import { fold, foldText } from '../core/search.js';
+import { createTextMarks } from './textMarks.js';
 
 /** 道具の読み込みは 1 回だけ（2 つ目の編集画面でも待たない） */
 let libraryPromise = null;
@@ -121,6 +122,8 @@ export async function createDocEditor(mount, {
     TableRow,
     TableHeader,
     TableCell,
+    // 文字の色とマーカー（色は名前で持つ。詳しくは editor/textMarks.js）
+    ...createTextMarks(lib),
   ];
   extensions.push(FindHighlight);
   if (placeholder) extensions.push(Placeholder.configure({ placeholder }));
@@ -214,8 +217,12 @@ export async function createDocEditor(mount, {
         bold: editor.isActive('bold'),
         italic: editor.isActive('italic'),
         strike: editor.isActive('strike'),
+        underline: editor.isActive('underline'),
         code: editor.isActive('code'),
         link: editor.isActive('link'),
+        // いま当たっている色（名前。無ければ空）
+        ink: editor.getAttributes('textColor')?.color || '',
+        marker: editor.getAttributes('marker')?.color || '',
         heading,
         bullet: editor.isActive('bulletList'),
         ordered: editor.isActive('orderedList'),
@@ -251,7 +258,12 @@ export async function createDocEditor(mount, {
       bold: () => chain().toggleBold().run(),
       italic: () => chain().toggleItalic().run(),
       strike: () => chain().toggleStrike().run(),
+      underline: () => chain().toggleUnderline().run(),
       code: () => chain().toggleCode().run(),
+      /** 文字の色（name = core/inks.js の名前。null で色なしに戻す） */
+      ink: (color) => (color ? chain().setInk(color).run() : chain().unsetInk().run()),
+      /** マーカー（同じ色をもう一度押したら外す） */
+      marker: (color) => (color ? chain().setMarker(color).run() : chain().unsetMarker().run()),
       heading: (level = 2) => chain().toggleHeading({ level }).run(),
       bullet: () => chain().toggleBulletList().run(),
       ordered: () => chain().toggleOrderedList().run(),

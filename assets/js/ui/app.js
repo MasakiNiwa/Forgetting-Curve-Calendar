@@ -12,6 +12,7 @@ import { currentRoute, navigate, parseHash, startRouter } from './router.js';
 import { renderNoteEditor, disposeNoteEditor, isEditorShowing } from './views/noteEditor.js';
 import { openBackupSheet, backupLabel } from './backup.js';
 import { missionButton, announceMissions, celebrate } from './missions.js';
+import { portalButton } from './portal.js';
 import { APP_NAME, APP_TAGLINE } from '../core/config.js';
 
 const ROUTES = [
@@ -62,6 +63,8 @@ export function mountApp(store, root) {
 
   // 毎日ここへ戻ってくる理由（デイリーミッション）への入口
   const mission = missionButton(store);
+  // 「書くことが無い日」の入口（学びのとびら）
+  const portal = portalButton(store);
 
   const appbar = h('header', { class: 'appbar' },
     h('div', { class: 'appbar__brand' },
@@ -70,6 +73,7 @@ export function mountApp(store, root) {
         h('div', { class: 'appbar__title' }, APP_NAME),
         h('div', { class: 'appbar__tagline' }, APP_TAGLINE))),
     h('div', { class: 'appbar__spacer' }),
+    portal.element,
     mission.element,
     backupButton);
 
@@ -119,6 +123,7 @@ export function mountApp(store, root) {
         noteId: segments[1],
         parentId: params.get('parent') || null,
         anchorDate: params.get('date') || null,
+        fromLink: params.get('link') || null,
         returnTo: params.get('from') || 'notes',
       }));
       main.scrollTop = 0;
@@ -198,6 +203,7 @@ export function mountApp(store, root) {
   store.subscribe((event) => {
     if (event?.type === 'error') toast(event.message);
     updateBackupBadge();
+    portal.update();
     syncMissions();
     // 編集画面は自分で描画を持っているので、保存のたびに作り直さない
     if (document.documentElement.dataset.mode === 'editor') return;

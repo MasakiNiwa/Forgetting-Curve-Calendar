@@ -10,6 +10,7 @@
  */
 import { h } from './dom.js';
 import { normalizeDoc } from '../core/doc.js';
+import { isInk, isMarker } from '../core/inks.js';
 import { markdownView } from './markdownView.js';
 
 const MARK_TAG = { bold: 'strong', italic: 'em', strike: 's', underline: 'u' };
@@ -34,6 +35,19 @@ function renderText(node) {
       });
       a.appendChild(el);
       el = a;
+      return;
+    }
+    // 色は名前で持っているので、ここで見た目の名札に置き換える
+    if (mark.type === 'textColor' && isInk(mark.attrs?.color)) {
+      const span = h('span', { class: `rt-ink rt-ink--${mark.attrs.color}` });
+      span.appendChild(el);
+      el = span;
+      return;
+    }
+    if (mark.type === 'marker' && isMarker(mark.attrs?.color)) {
+      const em = h('mark', { class: `rt-marker rt-marker--${mark.attrs.color}` });
+      em.appendChild(el);
+      el = em;
       return;
     }
     const tag = MARK_TAG[mark.type];

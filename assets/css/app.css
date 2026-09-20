@@ -134,6 +134,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
   cursor: pointer;
   transition: box-shadow var(--fcc-dur-short), filter var(--fcc-dur-short), background var(--fcc-dur-short);
 }
+/* リンクをボタンの形で置くところ（別のタブで開くもの）は下線を外す */
+a.btn { text-decoration: none; }
 .btn:hover { filter: brightness(1.06); box-shadow: var(--fcc-elev-1); }
 .btn:active { filter: brightness(.96); }
 .btn:disabled { opacity: .38; cursor: not-allowed; box-shadow: none; filter: none; }
@@ -1299,6 +1301,42 @@ button, input, textarea, select { font: inherit; color: inherit; }
 /* 読み込み中はツールバーの編集ボタンを押せないようにする */
 .ed[data-loading="true"] .ed__shortcuts { opacity: .4; pointer-events: none; }
 
+/* --- 文字の色とマーカー（編集中も、読むだけの表示も同じ見た目） --- */
+/* 色は名前で保存し、ここで配色に合う色に置き換える（core/inks.js） */
+.rt-ink--red { color: var(--fcc-ink-red); }
+.rt-ink--orange { color: var(--fcc-ink-orange); }
+.rt-ink--green { color: var(--fcc-ink-green); }
+.rt-ink--blue { color: var(--fcc-ink-blue); }
+.rt-ink--purple { color: var(--fcc-ink-purple); }
+.rt-ink--gray { color: var(--fcc-ink-gray); }
+
+.rt-marker {
+  /* mark の既定（黄色地・黒文字）は使わず、配色に合わせた色を置く */
+  color: inherit;
+  background: var(--fcc-marker-yellow);
+  border-radius: 3px;
+  padding: 0 .12em;
+  /* 行をまたいでも、行ごとに角を丸める */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.rt-marker--yellow { background: var(--fcc-marker-yellow); }
+.rt-marker--green { background: var(--fcc-marker-green); }
+.rt-marker--blue { background: var(--fcc-marker-blue); }
+.rt-marker--pink { background: var(--fcc-marker-pink); }
+.rt-marker--purple { background: var(--fcc-marker-purple); }
+
+/* 色を選ぶメニューの丸（popover の中に並ぶ） */
+.popover__swatch {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--fcc-radius-full);
+  border: 1px solid var(--fcc-outline-variant);
+}
+.popover__swatch--ink { display: grid; place-items: center; font-size: .78rem; font-weight: 700; }
+.popover__swatch--none { background: transparent; }
+
 .rt {
   outline: none;
   min-height: 40vh;
@@ -1794,6 +1832,236 @@ button, input, textarea, select { font: inherit; color: inherit; }
   border-radius: inherit;
   background: var(--fcc-primary);
   transition: width var(--fcc-dur-medium) var(--fcc-ease-standard);
+}
+
+/* ==========================================================================
+   v1.1: 学びのとびら（リンク集）
+   ========================================================================== */
+
+/* --- アプリバーの入口（ミッションの左どなり） --- */
+.appbar__portal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  min-width: 40px;
+  border: 0;
+  border-radius: var(--fcc-radius-full);
+  background: transparent;
+  color: var(--fcc-primary);
+  cursor: pointer;
+  transition: background var(--fcc-dur-short) var(--fcc-ease-standard);
+}
+.appbar__portal:hover { background: color-mix(in srgb, var(--fcc-on-surface) 8%, transparent); }
+.appbar__portal-icon { display: flex; }
+/* まだ 1 件も入っていないときは、控えめに置いておく */
+.appbar__portal[data-empty="true"] { color: var(--fcc-on-surface-variant); }
+
+/* --- とびらの中身 --- */
+.portal { display: flex; flex-direction: column; gap: 14px; }
+.portal__head { display: flex; align-items: flex-start; gap: 10px; }
+.portal__mark {
+  display: flex;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--fcc-radius-l);
+  background: var(--fcc-primary-container);
+  color: var(--fcc-on-primary-container);
+}
+.portal__title { margin: 0; font-size: 1.12rem; font-weight: 700; }
+.portal__lead { margin: 2px 0 0; font-size: .82rem; color: var(--fcc-on-surface-variant); }
+
+.portal__stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.portal__stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--fcc-radius-full);
+  background: var(--fcc-surface-container-high);
+  color: var(--fcc-on-surface-variant);
+  font-size: .74rem;
+  font-variant-numeric: tabular-nums;
+}
+.portal__stat-icon { display: flex; }
+
+/* --- 今日はこれ（いちばん長く開いていないリンク） --- */
+.portal__pick {
+  position: relative;
+  padding: 14px 16px;
+  border-radius: var(--fcc-radius-l);
+  /* 色は名前で持っているリンクの色。少しだけ華やかにする */
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--pick-color) 16%, var(--fcc-surface-container-low)),
+      var(--fcc-surface-container-low) 70%);
+  border: 1px solid color-mix(in srgb, var(--pick-color) 30%, var(--fcc-outline-variant));
+  --pick-color: var(--fcc-ink-blue);
+}
+.portal__pick[data-color="red"] { --pick-color: var(--fcc-ink-red); }
+.portal__pick[data-color="orange"] { --pick-color: var(--fcc-ink-orange); }
+.portal__pick[data-color="green"] { --pick-color: var(--fcc-ink-green); }
+.portal__pick[data-color="blue"] { --pick-color: var(--fcc-ink-blue); }
+.portal__pick[data-color="purple"] { --pick-color: var(--fcc-ink-purple); }
+.portal__pick[data-color="gray"] { --pick-color: var(--fcc-ink-gray); }
+.portal__pick-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .72rem;
+  font-weight: 700;
+  color: var(--pick-color);
+}
+.portal__pick-label span { display: flex; }
+.portal__pick-title {
+  margin-top: 6px;
+  font-size: 1.02rem;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-word;
+}
+.portal__pick-note { margin: 4px 0 0; font-size: .82rem; }
+.portal__pick-meta {
+  margin: 4px 0 0;
+  font-size: .72rem;
+  color: var(--fcc-on-surface-variant);
+  word-break: break-all;
+}
+.portal__pick-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
+
+/* --- リンクのカード --- */
+.portal__grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+.pcard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--fcc-outline-variant);
+  border-radius: var(--fcc-radius-l);
+  background: var(--fcc-surface-container-low);
+  overflow: hidden;
+  --card-color: var(--fcc-ink-blue);
+  transition: border-color var(--fcc-dur-short) var(--fcc-ease-standard),
+    background var(--fcc-dur-short) var(--fcc-ease-standard);
+}
+.pcard[data-color="red"] { --card-color: var(--fcc-ink-red); }
+.pcard[data-color="orange"] { --card-color: var(--fcc-ink-orange); }
+.pcard[data-color="green"] { --card-color: var(--fcc-ink-green); }
+.pcard[data-color="blue"] { --card-color: var(--fcc-ink-blue); }
+.pcard[data-color="purple"] { --card-color: var(--fcc-ink-purple); }
+.pcard[data-color="gray"] { --card-color: var(--fcc-ink-gray); }
+.pcard:hover { border-color: color-mix(in srgb, var(--card-color) 50%, var(--fcc-outline-variant)); }
+.pcard__open {
+  display: flex;
+  gap: 10px;
+  padding: 12px 12px 10px;
+  color: inherit;
+  text-decoration: none;
+  /* 左端の色帯が「どの分野か」の目印になる */
+  border-left: 4px solid var(--card-color);
+}
+.pcard__open:hover { background: color-mix(in srgb, var(--card-color) 8%, transparent); }
+.pcard__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--fcc-radius-m);
+  background: color-mix(in srgb, var(--card-color) 18%, var(--fcc-surface-container-high));
+  font-size: 1.05rem;
+  line-height: 1;
+}
+.pcard__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pcard__title {
+  font-size: .9rem;
+  font-weight: 700;
+  line-height: 1.35;
+  /* 2 行までにして、カードの高さをそろえる */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pcard__host {
+  font-size: .7rem;
+  color: var(--fcc-on-surface-variant);
+  word-break: break-all;
+}
+.pcard__note {
+  margin-top: 2px;
+  font-size: .76rem;
+  color: var(--fcc-on-surface-variant);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pcard__foot {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px 6px 16px;
+  margin-top: auto;
+}
+.pcard__stats {
+  flex: 1;
+  font-size: .7rem;
+  color: var(--fcc-on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+
+.portal__empty {
+  padding: 16px;
+  border: 1px dashed var(--fcc-outline-variant);
+  border-radius: var(--fcc-radius-l);
+  font-size: .84rem;
+  color: var(--fcc-on-surface-variant);
+}
+.portal__empty p { margin: 0 0 6px; }
+.portal__empty-title { font-weight: 700; color: var(--fcc-on-surface); }
+.portal__ideas { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 4px; }
+
+.portal__foot { display: flex; flex-direction: column; gap: 6px; }
+
+/* --- 追加・編集のフォーム --- */
+.portal__form { display: flex; flex-direction: column; gap: 14px; }
+.portal__emoji-wrap { display: flex; flex-direction: column; gap: 8px; }
+.input--emoji { width: 4.5em; text-align: center; font-size: 1.1rem; }
+.portal__emoji { display: flex; flex-wrap: wrap; gap: 6px; }
+.portal__emoji-btn {
+  min-width: 36px;
+  min-height: 36px;
+  border: 1px solid var(--fcc-outline-variant);
+  border-radius: var(--fcc-radius-m);
+  background: var(--fcc-surface-container-low);
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+.portal__emoji-btn:hover { background: var(--fcc-surface-container-high); }
+.portal__colors { display: flex; flex-wrap: wrap; gap: 8px; }
+.portal__color {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--fcc-radius-full);
+  border: 2px solid transparent;
+  background: var(--swatch, var(--fcc-ink-blue));
+  cursor: pointer;
+}
+.portal__color[data-color="red"] { --swatch: var(--fcc-ink-red); }
+.portal__color[data-color="orange"] { --swatch: var(--fcc-ink-orange); }
+.portal__color[data-color="green"] { --swatch: var(--fcc-ink-green); }
+.portal__color[data-color="blue"] { --swatch: var(--fcc-ink-blue); }
+.portal__color[data-color="purple"] { --swatch: var(--fcc-ink-purple); }
+.portal__color[data-color="gray"] { --swatch: var(--fcc-ink-gray); }
+.portal__color[aria-pressed="true"] {
+  border-color: var(--fcc-on-surface);
+  box-shadow: 0 0 0 2px var(--fcc-surface) inset;
 }
 
 /* --- アプリバーのリング --- */

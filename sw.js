@@ -7,7 +7,7 @@
  * - バージョンを変えると古いキャッシュを破棄する。
  * - メモのデータはキャッシュではなく localStorage にあるため、ここでは扱わない。
  */
-const VERSION = 'v1.0.1';
+const VERSION = 'v1.1.0';
 const PREFIX = 'fcc-';
 const CACHE = `${PREFIX}${VERSION}`;
 
@@ -27,6 +27,7 @@ const PRECACHE = [
   './assets/js/core/drafts.js',
   './assets/js/core/doc.js',
   './assets/js/core/exporter.js',
+  './assets/js/core/inks.js',
   './assets/js/core/markdown.js',
   './assets/js/core/migrations.js',
   './assets/js/core/missions.js',
@@ -39,6 +40,7 @@ const PRECACHE = [
   './assets/js/core/store.js',
   './assets/js/editor/docEditor.js',
   './assets/js/editor/plainFallback.js',
+  './assets/js/editor/textMarks.js',
   // 本文を書くための道具（大きいので、編集画面を開いたときだけ読み込む）
   './assets/vendor/tiptap.bundle.js',
   './assets/js/ui/app.js',
@@ -54,6 +56,7 @@ const PRECACHE = [
   './assets/js/ui/markdownView.js',
   './assets/js/ui/missions.js',
   './assets/js/ui/overlays.js',
+  './assets/js/ui/portal.js',
   './assets/js/ui/reminders.js',
   './assets/js/ui/reviewSession.js',
   './assets/js/ui/router.js',

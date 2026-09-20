@@ -36,6 +36,21 @@
   --fcc-success: #206c3f;
   --fcc-success-container: #a9f2bf;
 
+  /* 本文に付けられる文字の色とマーカー。
+     名前（red / yellow …）で保存し、配色ごとにここで読める色へ置き換える。 */
+  --fcc-ink-red: #c0281f;
+  --fcc-ink-orange: #96570a;
+  --fcc-ink-green: #196b3c;
+  --fcc-ink-blue: #1d58b5;
+  --fcc-ink-purple: #7136b3;
+  --fcc-ink-gray: #5b5b65;
+
+  --fcc-marker-yellow: #fdee8a;
+  --fcc-marker-green: #b9f0c5;
+  --fcc-marker-blue: #c2e1ff;
+  --fcc-marker-pink: #ffd0e1;
+  --fcc-marker-purple: #e4d4ff;
+
   --fcc-surface: #fbf8ff;
   --fcc-on-surface: #1b1b21;
   --fcc-surface-variant: #e3e1ec;
@@ -115,6 +130,21 @@
 
   --fcc-success: #8dd5a4;
   --fcc-success-container: #0a5129;
+
+  /* 暗い配色では、文字の色は明るく。
+     マーカーは「透ける色」にして、文字の色をそのまま読めるようにする */
+  --fcc-ink-red: #ff9d94;
+  --fcc-ink-orange: #ffb95c;
+  --fcc-ink-green: #7ddba0;
+  --fcc-ink-blue: #9cc1ff;
+  --fcc-ink-purple: #d4b4ff;
+  --fcc-ink-gray: #b4b3bd;
+
+  --fcc-marker-yellow: rgba(255, 214, 10, .30);
+  --fcc-marker-green: rgba(60, 220, 130, .28);
+  --fcc-marker-blue: rgba(90, 170, 255, .32);
+  --fcc-marker-pink: rgba(255, 120, 180, .32);
+  --fcc-marker-purple: rgba(180, 130, 255, .34);
 
   --fcc-surface: #131318;
   --fcc-on-surface: #e4e1e9;
