@@ -1699,6 +1699,8 @@ a.btn { text-decoration: none; }
   text-align: left;
   cursor: pointer;
 }
+/* 外のページを開く項目は <a> なので、下線を消して見た目をそろえる */
+a.popover__item { text-decoration: none; }
 .popover__item:hover { background: var(--fcc-surface-container-highest); }
 .popover__item--on { background: var(--fcc-secondary-container); color: var(--fcc-on-secondary-container); }
 .popover__icon { display: flex; flex: none; }

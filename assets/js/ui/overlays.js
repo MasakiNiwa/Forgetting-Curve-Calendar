@@ -412,13 +412,24 @@ export function openPopover({ anchor, items, title, align = 'left' }) {
   let close = () => {};
   items.filter(Boolean).forEach((item) => {
     if (item.divider) { pop.appendChild(h('hr', { class: 'divider' })); return; }
-    pop.appendChild(h('button', {
-      type: 'button',
+    // 外のページを開く項目は、ふつうのリンクとして置く。
+    // JavaScript で開くと「ポップアップ」として止められることがあるため
+    const asLink = Boolean(item.href);
+    const props = asLink
+      ? { href: item.href, target: '_blank', rel: 'noopener noreferrer' }
+      : { type: 'button' };
+    pop.appendChild(h(asLink ? 'a' : 'button', {
+      ...props,
       class: `popover__item${item.active ? ' popover__item--on' : ''}`,
       role: 'menuitem',
       // 押してもカーソルが本文から外れないようにする
       onMouseDown: (e) => e.preventDefault(),
-      onClick: () => { close(); item.onClick?.(); },
+      onClick: () => {
+        // リンクは、閉じるのを 1 拍あとにする（閉じてから開こうとすると開けない）
+        if (asLink) setTimeout(() => close(), 0);
+        else close();
+        item.onClick?.();
+      },
     },
     item.icon ? h('span', { class: 'popover__icon', html: item.icon }) : null,
     h('span', { class: 'popover__label' }, item.label),

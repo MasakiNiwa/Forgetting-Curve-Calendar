@@ -67,12 +67,22 @@ export async function shareLink(url, title = '') {
   }
 }
 
-/** 新しいところで開く（いまの画面はそのまま残す） */
+/**
+ * 新しいところで開く（いまの画面はそのまま残す）。
+ *
+ * `window.open()` は使わない。理由が 2 つある。
+ *
+ *   1. `noopener` を付けた `window.open()` は、**うまく開けても null を返す**。
+ *      戻り値で成否を判断できないので、「失敗したときの保険」を足すと
+ *      毎回二重に開いてしまう（v1.1.2 で実際にそうなっていた）
+ *   2. ブラウザから見ると `window.open()` は「ポップアップ」で、
+ *      止められることがある。リンクを押したのと同じ形にすれば止められない
+ *
+ * そこで、その場でリンクを 1 つ作って押す（＝ふつうのリンクを押したのと同じ）。
+ * 押した本人の操作の中から呼ぶこと。
+ */
 export function openInNewTab(url) {
   if (!url) return;
-  const win = window.open(url, '_blank', 'noopener,noreferrer');
-  if (win) return;
-  // ポップアップが止められたときは、その場のリンクとして押す
   const a = document.createElement('a');
   a.href = url;
   a.target = '_blank';
