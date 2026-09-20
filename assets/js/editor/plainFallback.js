@@ -107,30 +107,44 @@ export function createPlainSurface(mount, {
     },
     goTo(pos) { this.select(pos, pos); },
     scrollCaret() { /* 入力欄はブラウザが面倒を見てくれる */ },
-    findNext(query) {
-      if (!query) return null;
-      const value = area.value;
-      let at = value.indexOf(query, area.selectionEnd);
-      if (at === -1) at = value.indexOf(query, 0);
-      if (at === -1) return null;
-      this.select(at, at + query.length);
-      return { from: at, to: at + query.length };
+    findMatches(query, { exact = false } = {}) {
+      const needle = String(query ?? '');
+      if (!needle) return [];
+      const value = exact ? area.value : area.value.toLowerCase();
+      const q = exact ? needle : needle.toLowerCase();
+      const out = [];
+      let at = value.indexOf(q);
+      while (at !== -1) {
+        out.push({ from: at, to: at + q.length });
+        at = value.indexOf(q, at + q.length);
+      }
+      return out;
     },
-    replaceCurrent(query, replacement) {
-      const { selectionStart: s, selectionEnd: e } = area;
-      if (s === e || area.value.slice(s, e) !== query) return false;
-      area.setRangeText(replacement || '', s, e, 'end');
+    matchIndexAfterCaret(ranges) {
+      const found = ranges.findIndex((r) => r.from >= area.selectionEnd);
+      return found === -1 ? 0 : found;
+    },
+    highlight() { /* 入力欄には色を置けない */ },
+    clearHighlight() { /* noop */ },
+    revealRange(range) { if (range) this.select(range.from, range.to); },
+    placeCaret(range) { if (range) this.select(range.from, range.to); },
+    replaceRange(range, replacement) {
+      if (!range) return false;
+      area.setRangeText(replacement || '', range.from, range.to, 'end');
       grow();
       onChange();
       return true;
     },
-    replaceAll(query, replacement) {
-      if (!query || !area.value.includes(query)) return 0;
-      const count = area.value.split(query).length - 1;
-      area.value = area.value.split(query).join(replacement || '');
+    replaceRanges(ranges, replacement) {
+      if (!ranges?.length) return 0;
+      let value = area.value;
+      [...ranges].reverse().forEach(({ from, to }) => {
+        value = value.slice(0, from) + (replacement || '') + value.slice(to);
+      });
+      area.value = value;
       grow();
       onChange();
-      return count;
+      return ranges.length;
     },
   };
 }

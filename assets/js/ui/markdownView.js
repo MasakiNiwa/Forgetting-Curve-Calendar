@@ -1,6 +1,10 @@
 /**
  * Markdown の構造を画面に出す。
  *
+ * v0.14 で、保存されている本文はすべて文書データ（core/doc.js）になった。
+ * ここが使われるのは、文書データを持たないものが来たときの受け皿と、
+ * 古いメモを読み直して文書データへ移すとき（migrations）だけ。
+ *
  * 文字はすべてテキストノードとして置く（innerHTML は使わない）ので、
  * メモに HTML を書いても、そのまま文字として出るだけで実行されない。
  */
@@ -113,17 +117,4 @@ export function markdownView(text, { className = '' } = {}) {
   const root = h('div', { class: `md ${className}`.trim() });
   append(root, parseMarkdown(text).map(renderBlock));
   return root;
-}
-
-/**
- * 本文の表示。設定が「そのまま」なら、書いたとおりの文字で出す。
- * @param {string} text
- * @param {object} settings
- * @param {{className?:string, plainClass?:string}} options
- */
-export function bodyView(text, settings, { className = '', plainClass = '' } = {}) {
-  if (settings?.markdown === false) {
-    return h('p', { class: plainClass || className }, text);
-  }
-  return markdownView(text, { className });
 }

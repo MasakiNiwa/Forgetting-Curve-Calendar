@@ -6,7 +6,7 @@
  * 復習スケジュールはメモに積んだ出来事 (events) から毎回導出する（curve.js の replay）。
  * そのため「取り消す」は最後の出来事を取り除くだけで、ease も未来の予定も正確に戻る。
  */
-import { APP_VERSION } from './config.js';
+import { APP_VERSION, SCHEMA_VERSION } from './config.js';
 import { addDays, diffDays, fromKey as fromKeyLocal, todayKey } from './date.js';
 import {
   baseIntervalsOf, createEvent, isOverdue, localDayOf, nextReview, refreshNote,
@@ -185,9 +185,10 @@ export class Store {
     this._verifiedWriter = false;
     if (raw) this._savedStamp = stampsOf(this.data.notes);
     else { this._savedStamp = null; this._dirty.all = true; }
-    // 予定まで書き込まれた古い形（v0.9.0 まで）なら、軽い形へ一度だけ書き直す。
-    // 起動のたびに読み捨てる値を、読み込まずに済むようにするため。
-    if (raw?.notes?.some((n) => n && n.reviews !== undefined)) {
+    // 形が変わった（移行した）なら、新しい形で一度だけ書き直す。
+    // 起動のたびに読み直す・読み捨てるのを避けるため。
+    const migrated = raw && Number(raw.schemaVersion || 1) < SCHEMA_VERSION;
+    if (migrated || raw?.notes?.some((n) => n && n.reviews !== undefined)) {
       this._dirty.all = true;
       // 最初の描画の邪魔をしないよう、少し待ってから
       setTimeout(() => this.schedulePersist(), 1500);

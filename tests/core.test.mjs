@@ -1682,6 +1682,59 @@ test('tabLock: 閉じたタブの持ち主は引き継げる', () => {
   assert.equal(b.currentOwner().id, 'tab_b');
 });
 
+test('tabLock: 閉じてすぐ開き直しても、見るだけにならない', async () => {
+  const storage = fakeStorage();
+  let clock = 1_000_000;
+  const now = () => clock;
+
+  // 1 枚目が書いていた（印はまだ新しい）
+  const a = new TabLock({ storage, now, id: 'tab_a' });
+  a.claim();
+  // タブが閉じられた。印を消せないまま終わることもある（強制終了など）
+  clock += 1000;
+
+  // 開き直したタブは「そこにいますか」と尋ね、返事が無いので引き継ぐ
+  const b = new TabLock({ storage, now, id: 'tab_b' });
+  assert.equal(await b.claimWithProbe({ wait: 0, sleep: async () => {} }), true);
+  assert.equal(b.owner, true);
+  assert.equal(b.currentOwner().id, 'tab_b');
+});
+
+test('tabLock: 生きているタブが答えたときは、見るだけのまま', async () => {
+  const storage = fakeStorage();
+  let clock = 1_000_000;
+  const now = () => clock;
+
+  const a = new TabLock({ storage, now, id: 'tab_a' });
+  a.claim();
+
+  const b = new TabLock({ storage, now, id: 'tab_b' });
+  const claimed = await b.claimWithProbe({
+    wait: 0,
+    // 生きているタブは、合図を受け取って返事を書く
+    sleep: async () => { a.handleSignal('fcc.owner.ping.v1'); },
+  });
+  assert.equal(claimed, false);
+  assert.equal(b.owner, false);
+  assert.equal(a.currentOwner().id, 'tab_a');
+});
+
+test('tabLock: 古い返事は当てにしない', async () => {
+  const storage = fakeStorage();
+  let clock = 1_000_000;
+  const now = () => clock;
+
+  const a = new TabLock({ storage, now, id: 'tab_a' });
+  a.claim();
+  // 前回の開き直しのときに書かれた、古い返事が残っている
+  a.answerPing();
+  clock += 5000;
+
+  const b = new TabLock({ storage, now, id: 'tab_b' });
+  assert.equal(await b.claimWithProbe({ wait: 0, sleep: async () => {} }), true,
+    '尋ねたあとの返事でなければ、居ないものとして扱う');
+});
+
 test('tabLock: 「このタブで編集する」で譲り受けられる', async () => {
   const storage = fakeStorage();
   let clock = 1_000_000;

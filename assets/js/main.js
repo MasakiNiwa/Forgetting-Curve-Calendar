@@ -37,7 +37,7 @@ async function boot() {
   }, 60_000);
 
   watchViewport();
-  setupTabOwnership(store, new TabLock({ storage: window.localStorage }));
+  await setupTabOwnership(store, new TabLock({ storage: window.localStorage }));
   registerServiceWorker();
 
   // 開発・デバッグ用

@@ -89,10 +89,9 @@ export function reviewCard({ store, note, review, onOpen, showActions = true }) 
     if (!text) return;
     if (full) {
       // 読むときの見た目に整えて出す（文書データを持たない古いメモは Markdown として）
-      contentSlot.appendChild(noteBodyView(note, store.settings, {
+      contentSlot.appendChild(noteBodyView(note, {
         text,
         className: 'note-card__body note-card__body--full',
-        plainClass: 'note-card__body note-card__body--full',
       }));
       return;
     }
