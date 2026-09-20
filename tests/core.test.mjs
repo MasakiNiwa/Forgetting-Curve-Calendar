@@ -18,7 +18,6 @@ import {
   displayTitle, makeEventId, normalizeBookmarks, normalizeData, recallCue, safeBookmarkUrl,
 } from '../assets/js/core/models.js';
 import { normalizeDoc } from '../assets/js/core/doc.js';
-import { toIntentUrl } from '../assets/js/ui/openExternal.js';
 import { migrate } from '../assets/js/core/migrations.js';
 import { SCHEMA_VERSION } from '../assets/js/core/config.js';
 import {
@@ -1979,27 +1978,4 @@ test('models: リンクから書き始めるメモは、出どころを本文の
   assert.equal(clean.content[0].content[0].text, '記憶のしくみ');
   assert.equal(clean.content[0].content[0].marks[0].attrs.href, 'https://example.com/memory');
   assert.equal(clean.content.length, 2, '続きを書くための空行がある');
-});
-
-/* ------------------------------------------------------------------ */
-/* 外のページの開き方（v1.1.1）                                         */
-/* ------------------------------------------------------------------ */
-
-test('openExternal: Android の受け渡し用 URL の作り方', () => {
-  assert.equal(
-    toIntentUrl('https://example.com/a?b=1'),
-    'intent://example.com/a?b=1#Intent;scheme=https;'
-      + 'action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end',
-  );
-  assert.equal(
-    toIntentUrl('http://example.com/'),
-    'intent://example.com/#Intent;scheme=http;'
-      + 'action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end',
-  );
-  // 「#」から後ろは、この書き方では持っていけないので渡さない
-  assert.equal(toIntentUrl('https://example.com/page#section'), null);
-  // http / https 以外は渡さない
-  assert.equal(toIntentUrl('javascript:alert(1)'), null);
-  assert.equal(toIntentUrl('mailto:a@example.com'), null);
-  assert.equal(toIntentUrl('でたらめ'), null);
 });

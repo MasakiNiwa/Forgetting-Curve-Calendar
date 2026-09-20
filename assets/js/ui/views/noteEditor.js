@@ -12,7 +12,7 @@ import { h, append, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { openSheet, openMenu, openDialog, openPopover, confirmDialog, toast } from '../overlays.js';
 import { openExportDialog } from '../exportDialog.js';
-import { openExternal } from '../openExternal.js';
+import { canShareLink, openInNewTab, shareLink } from '../openExternal.js';
 import { branchTree, curvePreview, reviewTimeline } from '../components.js';
 import { createDocEditor } from '../../editor/docEditor.js';
 import { createPlainSurface } from '../../editor/plainFallback.js';
@@ -1225,11 +1225,9 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, fromLink
   }
 
   /** リンクの URL を聞いてから貼る */
-  /** 外のページを開く（ホーム画面のアプリからは、端末のブラウザへ渡す） */
+  /** 外のページを開く */
   function openLinkTarget(href) {
-    if (!href) return;
-    if (openExternal(href)) return;
-    window.open(href, '_blank', 'noopener,noreferrer');
+    openInNewTab(href);
   }
 
   /** メニューの見出しに出す、短くした URL */
@@ -1259,6 +1257,14 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, fromLink
             toast(await copyText(href) ? 'コピーしました' : 'コピーできませんでした');
           },
         },
+        // ほかのアプリ（ふだん使いのブラウザなど）へ渡す逃げ道
+        canShareLink() ? {
+          label: 'ほかのアプリで開く',
+          icon: icon('upload', { size: 20 }),
+          onClick: async () => {
+            if (await shareLink(href) === 'unavailable') toast('共有できませんでした');
+          },
+        } : null,
         { divider: true },
         {
           label: '行き先を直す',
