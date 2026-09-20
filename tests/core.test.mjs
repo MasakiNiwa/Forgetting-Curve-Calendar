@@ -480,14 +480,22 @@ test('spread: 決定的で、並び順と下限を必ず守る', () => {
 test('spread: 同じ日に書いた複数のメモは未来の復習日が重ならない', async () => {
   const store = new Store(new MemoryAdapter());
   await store.load();
-  const notes = Array.from({ length: 6 }, (_, i) => store.addNote({
-    body: `同じ日のメモ${i}`, anchorDate: '2026-09-17', presetId: 'standard',
+  // シードは決め打ちにする。メモを足すたびに引く乱数で試すと、
+  // たまたま近いシードが並んだ日だけ落ちる（散らばり方ではなく、運を見てしまう）
+  const seeds = [120, 1450, 2800, 4200, 6100, 8300];
+  const notes = seeds.map((seed, i) => store.addNote({
+    body: `同じ日のメモ${i}`, anchorDate: '2026-09-17', presetId: 'standard', seed,
   }));
   const lastDues = notes.map((n) => n.reviews[n.reviews.length - 1].due);
-  assert.ok(new Set(lastDues).size >= 5, `最後の回が散る: ${lastDues.join(',')}`);
+  assert.equal(new Set(lastDues).size, seeds.length, `最後の回が散る: ${lastDues.join(',')}`);
 
   // 翌日はそろって同じ（想定どおり）
   assert.equal(new Set(notes.map((n) => n.reviews[0].due)).size, 1);
+
+  // 新しいメモのシードは、指定しなければ毎回引き直す（同じ日でも散る）
+  const drawn = new Set(Array.from({ length: 8 }, (_, i) => store
+    .addNote({ body: `引き直し${i}`, anchorDate: '2026-09-17' }).schedule.seed));
+  assert.ok(drawn.size >= 6, `シードは引き直される: ${[...drawn].join(',')}`);
 });
 
 test('spread: シードを変えると未来の予定だけ組み直される', async () => {
