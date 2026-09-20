@@ -397,6 +397,11 @@ export function openMenu({ title, items }) {
  * 本文を書いている途中に使うので、シートのように画面を覆わない。
  * 押してもカーソルが本文から外れない（＝キーボードが閉じない）ようにしてある。
  *
+ * 押したボタンに**ずっと付いて回る**。
+ * スマホでは、変換の候補が出たりキーボードが開け閉めされるたびに
+ * 下のバー（＝押したボタン）が上下する。開いたときの位置に置いたままだと、
+ * メニューだけが取り残されてしまうので、ボタンの位置を見張って追いかける。
+ *
  * @param {{anchor:HTMLElement, items:Array, title?:string, align?:'left'|'right'}} options
  */
 export function openPopover({ anchor, items, title, align = 'left' }) {
@@ -420,25 +425,71 @@ export function openPopover({ anchor, items, title, align = 'left' }) {
     item.hint ? h('span', { class: 'popover__hint' }, item.hint) : null));
   });
 
-  layer().append(scrim, pop);
-  close = pushOverlay([scrim, pop]);
-  scrim.addEventListener('mousedown', (e) => e.preventDefault());
-  scrim.addEventListener('click', () => close());
+  const vv = window.visualViewport;
 
-  // 押したボタンの真上に出す（画面からはみ出さないように寄せる）
+  // 押したボタンの真上に出す（見えている範囲からはみ出さないように寄せる）
   const place = () => {
     const rect = anchor.getBoundingClientRect();
-    const box = pop.getBoundingClientRect();
     const margin = 8;
+    // キーボードが出ていると、見えている範囲はこれだけになる。
+    // 位置は fixed（＝レイアウトの左上が原点）で書くので、原点もそろえる
+    const viewLeft = vv ? vv.offsetLeft : 0;
+    const viewTop = vv ? vv.offsetTop : 0;
+    const viewWidth = vv ? vv.width : window.innerWidth;
+    const viewHeight = vv ? vv.height : window.innerHeight;
+
+    // 高さは「押したボタンの上下で広い方」に収まる分だけにする。
+    // キーボードが出ていて置き場所が狭いときは、中を送って読む形になる
+    const room = Math.max(rect.top - viewTop, viewTop + viewHeight - rect.bottom) - margin * 2;
+    pop.style.maxHeight = `${Math.max(180, Math.min(420, Math.round(room)))}px`;
+
+    const box = pop.getBoundingClientRect();
     let left = align === 'right' ? rect.right - box.width : rect.left;
-    left = Math.max(margin, Math.min(left, window.innerWidth - box.width - margin));
+    left = Math.max(viewLeft + margin, Math.min(left, viewLeft + viewWidth - box.width - margin));
     const above = rect.top - box.height - 6;
-    const top = above >= margin ? above : Math.min(rect.bottom + 6, window.innerHeight - box.height - margin);
+    const top = above >= viewTop + margin
+      ? above
+      : Math.min(rect.bottom + 6, viewTop + viewHeight - box.height - margin);
     pop.style.left = `${Math.round(left)}px`;
     pop.style.top = `${Math.round(top)}px`;
     pop.dataset.ready = 'true';
   };
+
+  /**
+   * ボタンの位置を毎フレーム見比べて、動いたときだけ置き直す。
+   *
+   * キーボードの開け閉めは「ひと息で終わる動き」ではなく、
+   * 端末によっては数十フレームかけて動く。resize の知らせだけでは追い切れない。
+   * 位置が変わらないフレームでは何も書かないので、動きが無いあいだは静か。
+   */
+  let frame = 0;
+  let placedAt = '';
+  const follow = () => {
+    frame = requestAnimationFrame(follow);
+    // 押したボタンが画面から消えたら、メニューも閉じる（迷子にしない）
+    if (!anchor.isConnected) { close(); return; }
+    const rect = anchor.getBoundingClientRect();
+    const key = `${Math.round(rect.top)}:${Math.round(rect.left)}:${Math.round(rect.width)}`;
+    if (key === placedAt) return;
+    placedAt = key;
+    place();
+  };
+  const stopFollowing = () => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+  };
+
+  layer().append(scrim, pop);
+  close = pushOverlay([scrim, pop], stopFollowing);
+  scrim.addEventListener('mousedown', (e) => e.preventDefault());
+  scrim.addEventListener('click', () => close());
+
   place();
+  placedAt = (() => {
+    const r = anchor.getBoundingClientRect();
+    return `${Math.round(r.top)}:${Math.round(r.left)}:${Math.round(r.width)}`;
+  })();
+  frame = requestAnimationFrame(follow);
   return { close: () => close(), element: pop };
 }
 

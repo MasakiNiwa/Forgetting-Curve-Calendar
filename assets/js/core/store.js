@@ -13,8 +13,9 @@ import {
   resolveIntervals, sanitizeIntervals, sanitizeSeed,
 } from './curve.js';
 import {
-  createEmptyData, createNote, createProgress, makeEventId, normalizeActivity, normalizeData,
-  normalizeNote, normalizeSettings, normalizeTags, normalizeTombstones, toStoredData, toStoredNote,
+  MAX_BOOKMARKS, createEmptyData, createNote, createProgress, makeEventId, makeId,
+  normalizeActivity, normalizeBookmark, normalizeBookmarks, normalizeData, normalizeNote,
+  normalizeSettings, normalizeTags, normalizeTombstones, toStoredData, toStoredNote,
 } from './models.js';
 import {
   COMPLETE_BONUS, advanceStreak, evaluateMission, getMissionDef, levelInfo, pickMissions,
@@ -49,6 +50,7 @@ const IMMEDIATE_EVENTS = new Set([
 const REST_ONLY_EVENTS = new Set([
   'settings:update', 'backup:saved',
   'missions:update', 'missions:flag', 'missions:omikuji', 'missions:celebrated',
+  'bookmark:add', 'bookmark:update', 'bookmark:remove', 'bookmark:move', 'bookmark:open',
 ]);
 
 /**
@@ -356,10 +358,11 @@ export class Store {
     // ミッションの進み具合と活動記録も、失わないように統合する
     const progressChanged = this.mergeProgress(incoming.progress);
     const activityChanged = this.mergeActivity(incoming.activity);
+    const bookmarksChanged = this.mergeBookmarks(incoming.bookmarks);
 
     const nextNotes = [...mine.values()];
     const changed = added > 0 || updated > 0 || progressChanged || activityChanged
-      || nextNotes.length !== this.data.notes.length;
+      || bookmarksChanged || nextNotes.length !== this.data.notes.length;
     this.data.deleted = tombstones;
     if (changed) {
       this.data.notes = nextNotes;
@@ -1261,6 +1264,119 @@ export class Store {
     return this.data.settings;
   }
 
+  /* ------------------------------------------------- 学びのとびら */
+
+  /**
+   * 外のサイトへのリンク集。
+   *
+   * 「書くことが無い日」のきっかけを作るための置き場所。
+   * メモと同じく端末の中にしか無いので、バックアップにも一緒に入る。
+   */
+  get bookmarks() {
+    if (!Array.isArray(this.data.bookmarks)) this.data.bookmarks = [];
+    return this.data.bookmarks;
+  }
+
+  getBookmark(id) {
+    return this.bookmarks.find((b) => b.id === id) || null;
+  }
+
+  /** @returns {object|null} 追加したリンク（URL が読めない・多すぎるときは null） */
+  addBookmark(input) {
+    if (this.bookmarks.length >= MAX_BOOKMARKS) return null;
+    const bookmark = normalizeBookmark({ ...input, id: makeId('b') });
+    if (!bookmark) return null;
+    this.bookmarks.push(bookmark);
+    this.commit({ type: 'bookmark:add', id: bookmark.id }, { schedule: false });
+    return bookmark;
+  }
+
+  updateBookmark(id, patch) {
+    const current = this.getBookmark(id);
+    if (!current) return null;
+    // URL が読めなくなる変更は受け付けない（開けないリンクを作らない）
+    const next = normalizeBookmark({ ...current, ...patch, id, updatedAt: new Date().toISOString() });
+    if (!next) return null;
+    this.data.bookmarks = this.bookmarks.map((b) => (b.id === id ? next : b));
+    this.commit({ type: 'bookmark:update', id }, { schedule: false });
+    return next;
+  }
+
+  /** @returns {{bookmark:object, index:number}|null} 元に戻せるように、居た場所も返す */
+  removeBookmark(id) {
+    const index = this.bookmarks.findIndex((b) => b.id === id);
+    if (index === -1) return null;
+    const [bookmark] = this.bookmarks.splice(index, 1);
+    this.commit({ type: 'bookmark:remove', id }, { schedule: false });
+    return { bookmark, index };
+  }
+
+  restoreBookmark(bookmark, index = null) {
+    const restored = normalizeBookmark(bookmark);
+    if (!restored || this.getBookmark(restored.id)) return null;
+    const at = Number.isInteger(index) ? Math.max(0, Math.min(index, this.bookmarks.length)) : this.bookmarks.length;
+    this.bookmarks.splice(at, 0, restored);
+    this.commit({ type: 'bookmark:add', id: restored.id }, { schedule: false });
+    return restored;
+  }
+
+  /** 並べ替え（delta = -1 で上へ、+1 で下へ） */
+  moveBookmark(id, delta) {
+    const from = this.bookmarks.findIndex((b) => b.id === id);
+    if (from === -1) return false;
+    const to = from + (delta < 0 ? -1 : 1);
+    if (to < 0 || to >= this.bookmarks.length) return false;
+    const list = this.bookmarks;
+    [list[from], list[to]] = [list[to], list[from]];
+    this.commit({ type: 'bookmark:move', id }, { schedule: false });
+    return true;
+  }
+
+  /** 開いたことを覚える（「ひさしぶりのリンク」を選ぶために使う） */
+  markBookmarkOpened(id, at = new Date().toISOString()) {
+    const bookmark = this.getBookmark(id);
+    if (!bookmark) return null;
+    bookmark.opens += 1;
+    bookmark.openedAt = at;
+    this.commit({ type: 'bookmark:open', id }, { schedule: false });
+    return bookmark;
+  }
+
+  /** ここから 1 件メモが生まれたことを覚える（学びが残った数） */
+  markBookmarkNoted(id) {
+    const bookmark = this.getBookmark(id);
+    if (!bookmark) return null;
+    bookmark.notes += 1;
+    this.commit({ type: 'bookmark:update', id }, { schedule: false });
+    return bookmark;
+  }
+
+  /**
+   * 「今日はこれ」に出すリンク。
+   *
+   * いちばん長いあいだ開いていないものを選ぶ（まだ開いていないものが先）。
+   * 日替わりの運任せにしないのは、「積んだまま忘れる」のを防ぐため。
+   */
+  suggestedBookmark() {
+    const list = this.bookmarks;
+    if (!list.length) return null;
+    return list.reduce((best, item) => {
+      const a = item.openedAt || '';
+      const b = best.openedAt || '';
+      if (a !== b) return a < b ? item : best;
+      return item.createdAt < best.createdAt ? item : best;
+    });
+  }
+
+  /** リンク集の合計（開いた回数と、ここから生まれたメモ） */
+  bookmarkStats() {
+    return this.bookmarks.reduce((acc, b) => ({
+      count: acc.count + 1,
+      opens: acc.opens + b.opens,
+      notes: acc.notes + b.notes,
+    }), { count: 0, opens: 0, notes: 0 });
+  }
+
   /* ------------------------------------------------- デイリーミッション */
 
   get progress() {
@@ -1517,6 +1633,42 @@ export class Store {
   /**
    * 別のタブの活動記録を取り込む。触れたメモは和集合、文字数は多い方を採る。
    */
+  /**
+   * 別のタブが足したリンクを取り込む。
+   *
+   * 同じリンクは新しく直した方を採り、こちらに無いものは後ろへ足す。
+   * 消したことは覚えていないので、両方のタブで別々に消し足しをすると、
+   * 片方で消したリンクが戻ってくることがある（書いたものを失わない側に寄せた）。
+   * @returns {boolean} 変わったか
+   */
+  mergeBookmarks(theirs) {
+    const incoming = normalizeBookmarks(theirs);
+    if (!incoming.length) return false;
+    const mine = new Map(this.bookmarks.map((b) => [b.id, b]));
+    let changed = false;
+    incoming.forEach((item) => {
+      const ours = mine.get(item.id);
+      if (!ours) {
+        mine.set(item.id, item);
+        changed = true;
+        return;
+      }
+      if (item.updatedAt > ours.updatedAt) {
+        mine.set(item.id, item);
+        changed = true;
+      }
+    });
+    if (!changed) return false;
+    // こちらの並びを保ったまま、相手にしか無いものを後ろへ足す
+    const order = this.bookmarks.map((b) => b.id);
+    const rest = [...mine.keys()].filter((id) => !order.includes(id));
+    this.data.bookmarks = [...order, ...rest]
+      .map((id) => mine.get(id))
+      .filter(Boolean)
+      .slice(0, MAX_BOOKMARKS);
+    return true;
+  }
+
   mergeActivity(theirs) {
     const incoming = normalizeActivity(theirs);
     if (!this.data.activity) this.data.activity = {};

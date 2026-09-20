@@ -62,7 +62,8 @@ export function createPlainSurface(mount, {
     destroy() { area.remove(); },
     state() {
       return {
-        bold: false, italic: false, strike: false, code: false, link: false,
+        bold: false, italic: false, strike: false, underline: false, code: false, link: false,
+        ink: '', marker: '',
         heading: 0, bullet: false, ordered: false, task: false, quote: false,
         codeBlock: false, inTable: false, taskStrike: true,
         canIndent: false, canOutdent: false, canUndo: true, canRedo: true,
@@ -85,7 +86,8 @@ export function createPlainSurface(mount, {
     commands: {
       undo: () => document.execCommand?.('undo'),
       redo: () => document.execCommand?.('redo'),
-      bold: noop, italic: noop, strike: noop, code: noop,
+      bold: noop, italic: noop, strike: noop, underline: noop, code: noop,
+      ink: noop, marker: noop,
       heading: noop, bullet: noop, ordered: noop, task: noop, quote: noop,
       codeBlock: noop, rule: noop, table: noop, plain: noop,
       indent: noop, outdent: noop, taskStrike: noop,

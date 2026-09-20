@@ -1,4 +1,4 @@
-export { Editor, Extension, getSchema } from '@tiptap/core';
+export { Editor, Extension, Mark, mergeAttributes, getSchema } from '@tiptap/core';
 export { StarterKit } from '@tiptap/starter-kit';
 export { TaskList, TaskItem } from '@tiptap/extension-list';
 export { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';

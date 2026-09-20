@@ -12,6 +12,7 @@
  *   - これまでの Markdown のメモを、文書データに直す（markdownToDoc）
  */
 import { parseMarkdown } from './markdown.js';
+import { isInk, isMarker } from './inks.js';
 
 /** 置いてよいかたまり（知らないものは段落として扱う） */
 const BLOCK_TYPES = new Set([
@@ -21,7 +22,9 @@ const BLOCK_TYPES = new Set([
 ]);
 
 /** 置いてよい飾り */
-const MARK_TYPES = new Set(['bold', 'italic', 'strike', 'code', 'underline', 'link']);
+const MARK_TYPES = new Set([
+  'bold', 'italic', 'strike', 'code', 'underline', 'link', 'textColor', 'marker',
+]);
 
 /** 開いてよいリンクだけを通す */
 function safeHref(href) {
@@ -40,6 +43,14 @@ function normalizeMarks(marks) {
       const href = safeHref(mark.attrs?.href);
       if (!href) return;
       out.push({ type, attrs: { href, target: '_blank', rel: 'noopener noreferrer' } });
+      return;
+    }
+    // 色は名前でしか持たない（決めた一覧に無いものは飾りを外して文字だけ残す）
+    if (type === 'textColor' || type === 'marker') {
+      const color = String(mark.attrs?.color || '');
+      const ok = type === 'textColor' ? isInk(color) : isMarker(color);
+      if (!ok) return;
+      out.push({ type, attrs: { color } });
       return;
     }
     out.push({ type });

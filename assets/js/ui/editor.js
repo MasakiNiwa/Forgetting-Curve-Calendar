@@ -32,6 +32,8 @@ export function openNoteEditor(store, options = {}) {
   navigate(['note', 'new'], {
     parent: options.parentId || undefined,
     date: options.anchorDate || undefined,
+    // 学びのとびらのリンクから書き始めたとき（出どころを本文の頭に置く）
+    link: options.link || undefined,
     from,
   });
   return null;

@@ -15,6 +15,7 @@ import {
 import { DEFAULT_SETTINGS, createNote, displayTitle, normalizeNote, toStoredNote } from '../assets/js/core/models.js';
 import { migrate } from '../assets/js/core/migrations.js';
 import { SCHEMA_VERSION } from '../assets/js/core/config.js';
+import { nearestInk, nearestMarker } from '../assets/js/core/inks.js';
 import { MemoryAdapter } from '../assets/js/core/storage.js';
 import { Store } from '../assets/js/core/store.js';
 
@@ -390,4 +391,63 @@ test('migrations: すでに文書データを持つメモには触れない', ()
     settings: {},
   });
   assert.deepEqual(data.notes[0].doc, original);
+});
+
+/* ------------------------------------------------------------------ */
+/* 文字の色とマーカー（v1.1）                                           */
+/* ------------------------------------------------------------------ */
+
+const colored = (text, marks) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text, marks }] }] });
+const marksOf = (d) => d.content[0].content[0].marks;
+
+test('doc: 決めた名前の色だけを受け取る', () => {
+  const ok = normalizeDoc(colored('赤', [{ type: 'textColor', attrs: { color: 'red' } }]));
+  assert.deepEqual(marksOf(ok), [{ type: 'textColor', attrs: { color: 'red' } }]);
+
+  // 一覧に無い色・生の CSS は飾りごと落とす（文字は残す）
+  const dropped = normalizeDoc(colored('あぶない', [
+    { type: 'textColor', attrs: { color: 'url(javascript:alert(1))' } },
+  ]));
+  assert.equal(marksOf(dropped), undefined);
+  assert.equal(docToText(dropped), 'あぶない');
+
+  const marker = normalizeDoc(colored('しるし', [{ type: 'marker', attrs: { color: 'yellow' } }]));
+  assert.deepEqual(marksOf(marker), [{ type: 'marker', attrs: { color: 'yellow' } }]);
+  // マーカーに無い色（灰）は落ちる
+  assert.equal(marksOf(normalizeDoc(colored('しるし', [{ type: 'marker', attrs: { color: 'gray' } }]))), undefined);
+});
+
+test('doc: 下線も残る／持ち出しでは文字だけになる', () => {
+  const d = normalizeDoc(colored('大事', [
+    { type: 'underline' },
+    { type: 'textColor', attrs: { color: 'blue' } },
+    { type: 'marker', attrs: { color: 'pink' } },
+  ]));
+  assert.equal(marksOf(d).length, 3);
+  // Markdown には色の書き方が無いので、文字だけを出す
+  assert.equal(docToMarkdown(d), '大事');
+  assert.equal(docToText(d), '大事');
+});
+
+test('inks: 貼り付けた色は、いちばん近い名前に寄る', () => {
+  assert.equal(nearestInk('rgb(200, 30, 30)'), 'red');
+  assert.equal(nearestInk('#1a6ed8'), 'blue');
+  assert.equal(nearestInk('#2e8b57'), 'green');
+  assert.equal(nearestInk('purple'), 'purple');
+  // ふつうの本文の色（黒っぽい・白っぽい）は色として扱わない
+  assert.equal(nearestInk('#333333'), null);
+  assert.equal(nearestInk('rgb(0,0,0)'), null);
+  assert.equal(nearestInk('#fefefe'), null);
+  assert.equal(nearestInk('transparent'), null);
+  assert.equal(nearestInk('rgba(255,0,0,0)'), null);
+  // 中間の灰色は「灰」
+  assert.equal(nearestInk('#808080'), 'gray');
+
+  // マーカーは薄い色が多いので、判定をゆるめにしてある
+  assert.equal(nearestMarker('#ffff00'), 'yellow');
+  assert.equal(nearestMarker('#ccffdd'), 'green');
+  assert.equal(nearestMarker('#ffd0e8'), 'pink');
+  // 地の色（白・灰）はマーカーではない
+  assert.equal(nearestMarker('#ffffff'), null);
+  assert.equal(nearestMarker('rgb(240,240,240)'), null);
 });

@@ -8,6 +8,7 @@ import { MAX_SHIELDS, createStreak, pruneDays } from './missions.js';
 import { markdownToPlain } from './markdown.js';
 import { DEFAULT_REMINDER, normalizeReminder } from './reminders.js';
 import { docToText, normalizeDoc } from './doc.js';
+import { isInk } from './inks.js';
 import {
   DEFAULT_PRESET_ID, DEFAULT_SPREAD_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, getSpread,
   localDayOf, randomSeed, refreshNote, resolveIntervals, sanitizeIntervals, sanitizeSeed,
@@ -146,6 +147,8 @@ export function createEmptyData() {
     settings: { ...DEFAULT_SETTINGS },
     activity: {},
     progress: createProgress(),
+    // 学びのとびら（外のサイトへのリンク集）
+    bookmarks: [],
     meta: { createdAt: now, updatedAt: now, appVersion: APP_VERSION, lastBackupAt: null },
   };
 }
@@ -251,6 +254,101 @@ export function bodyPreview(note) {
   if (firstIdx === -1) return '';
   // 1 行目はタイトルとして表示済みなので、続きの行だけを返す
   return lines.slice(firstIdx + 1).join('\n').trim();
+}
+
+/* ------------------------------------------------------------------ */
+/* リンク集（学びのとびら）                                             */
+/* ------------------------------------------------------------------ */
+
+/** 1 人が持てるリンクの数（多すぎると選べなくなる） */
+export const MAX_BOOKMARKS = 60;
+/** リンクに付けられるひとことの長さ */
+const BOOKMARK_NOTE_MAX = 120;
+
+/** 開いてよいリンクだけを通す（メモの本文と同じ決まり） */
+export function safeBookmarkUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw.slice(0, 2048);
+  // 「example.com/page」のように書かれたものは https を足す
+  if (/^[\w-]+(\.[\w-]+)+(\/|$|\?)/.test(raw)) return `https://${raw}`.slice(0, 2048);
+  return null;
+}
+
+/** リンクの見出しに使うところ（www は落とす） */
+export function bookmarkHost(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+/** アイコンに使う 1 文字（絵文字が無ければ、名前の頭文字） */
+export function bookmarkInitial(bookmark) {
+  if (bookmark?.emoji) return bookmark.emoji;
+  const source = (bookmark?.title || bookmarkHost(bookmark?.url || '') || '?').trim();
+  return [...source][0] || '?';
+}
+
+export function normalizeBookmark(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const url = safeBookmarkUrl(raw.url);
+  if (!url) return null;
+  const now = new Date().toISOString();
+  const title = String(raw.title || '').trim().slice(0, TITLE_MAX) || bookmarkHost(url);
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : makeId('b'),
+    url,
+    title,
+    // 「なぜ学びたいのか」を 1 行だけ書ける（見るたびに思い出せるように）
+    note: String(raw.note || '').trim().slice(0, BOOKMARK_NOTE_MAX),
+    // 名前の代わりに置く絵文字（1 文字）
+    emoji: [...String(raw.emoji || '').trim()].slice(0, 1).join(''),
+    color: isInk(raw.color) ? raw.color : 'blue',
+    tags: normalizeTags(raw.tags),
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now,
+    // 開いた回数と、最後に開いた時刻（「ひさしぶり」を選ぶのに使う）
+    opens: Math.max(0, Math.round(Number(raw.opens) || 0)),
+    openedAt: typeof raw.openedAt === 'string' ? raw.openedAt : null,
+    // ここから書いたメモの数（学びが残った証）
+    notes: Math.max(0, Math.round(Number(raw.notes) || 0)),
+  };
+}
+
+/**
+ * リンクから書き始めるメモの、最初の中身。
+ * 出どころ（リンク）が本文の頭に残るので、あとから読み返したときにたどれる。
+ */
+export function bookmarkSeedDoc(bookmark) {
+  return {
+    type: 'doc',
+    content: [
+      {
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          text: bookmark.title,
+          marks: [{ type: 'link', attrs: { href: bookmark.url } }],
+        }],
+      },
+      { type: 'paragraph' },
+    ],
+  };
+}
+
+export function normalizeBookmarks(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  raw.forEach((item) => {
+    const bookmark = normalizeBookmark(item);
+    if (!bookmark || seen.has(bookmark.id)) return;
+    seen.add(bookmark.id);
+    out.push(bookmark);
+  });
+  return out.slice(0, MAX_BOOKMARKS);
 }
 
 /* ------------------------------------------------------------------ */
@@ -431,6 +529,8 @@ export function normalizeData(raw) {
     activity: normalizeActivity(raw.activity),
     // デイリーミッションの進み具合（バックアップにも含める）
     progress: normalizeProgress(raw.progress),
+    // 学びのとびら（リンク集も端末内にしかないので、バックアップに含める）
+    bookmarks: normalizeBookmarks(raw.bookmarks),
     meta: {
       createdAt: raw.meta?.createdAt || base.meta.createdAt,
       updatedAt: raw.meta?.updatedAt || new Date().toISOString(),

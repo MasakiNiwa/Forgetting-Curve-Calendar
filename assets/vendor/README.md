@@ -17,13 +17,18 @@
 ```bash
 mkdir /tmp/tiptapbuild && cd /tmp/tiptapbuild
 npm init -y
-npm i @tiptap/core @tiptap/starter-kit @tiptap/extension-list \
-      @tiptap/extension-table @tiptap/extensions @tiptap/static-renderer esbuild
+npm i @tiptap/core@3.31.3 @tiptap/starter-kit@3.31.3 @tiptap/extension-list@3.31.3 \
+      @tiptap/extension-table@3.31.3 @tiptap/extensions@3.31.3 \
+      @tiptap/static-renderer@3.31.3 esbuild
 cp <このフォルダ>/tiptap.entry.js entry.js
 npx esbuild entry.js --bundle --format=esm --target=es2020 --minify \
       --legal-comments=none --outfile=tiptap.bundle.js
 cp tiptap.bundle.js <このフォルダ>/
 ```
+
+`Mark` と `mergeAttributes` を出しているのは、飾りを自分で定義するためです
+（文字の色とマーカー: `assets/js/editor/textMarks.js`）。
+色を値のまま本文へ書き込む拡張は入れていません（詳しくは docs/SPEC.md 9.18）。
 
 版を上げたときは、`assets/js/core/doc.js` の
 「置いてよいかたまり（BLOCK_TYPES）」「置いてよい飾り（MARK_TYPES）」が

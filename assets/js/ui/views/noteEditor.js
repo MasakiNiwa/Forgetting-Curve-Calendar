@@ -21,9 +21,10 @@ import {
   PRESETS, SPREADS, baseIntervalsOf, getPreset, getSpread, randomSeed, resolveIntervals,
   sanitizeIntervals, spreadIdOf, spreadIntervals,
 } from '../../core/curve.js';
-import { displayTitle } from '../../core/models.js';
+import { bookmarkSeedDoc, displayTitle } from '../../core/models.js';
 import { APP_NAME } from '../../core/config.js';
 import { markdownToDoc, normalizeDoc } from '../../core/doc.js';
+import { INK_COLORS, MARKER_COLORS, inkLabel, markerLabel } from '../../core/inks.js';
 import { clearDraft, draftKey, isEmptyDraft, loadDraft, saveDraft } from '../../core/drafts.js';
 import {
   addDays, formatDateTime, formatDuration, formatLong, formatRelative, formatSmart, todayKey,
@@ -49,7 +50,7 @@ const DRAFT_DEBOUNCE = 350;
  */
 let lastCreated = null;
 
-export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo = 'notes' }) {
+export function renderNoteEditor(store, { noteId, parentId, anchorDate, fromLink = null, returnTo = 'notes' }) {
   if (active) active.dispose();
 
   // 新規のつもりで開いたが、さっきここで作ったメモがあるならそれを開く
@@ -70,14 +71,23 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
   const key = draftKey({ noteId: existing?.id, parentId, anchorDate });
   const draft = loadDraft(key);
 
+  /**
+   * 学びのとびら（リンク集）から書き始めたメモ。
+   * どこから学んだのかを本文の頭に置いておく（あとからたどれるように）。
+   */
+  const source = !existing && fromLink ? store.getBookmark(fromLink) : null;
+  const prefill = source
+    ? { title: source.title, doc: bookmarkSeedDoc(source), body: source.title }
+    : null;
+
   const state = {
     id: existing?.id || null,
-    title: existing?.title ?? '',
+    title: existing?.title ?? prefill?.title ?? '',
     cue: existing?.cue ?? '',
     // 本文の正本。undefined なら「まだ読んでいない」（開くときに読む）
-    doc: existing?.doc,
+    doc: existing ? existing.doc : (prefill?.doc ?? undefined),
     // 探す・数える・書き出すための写し
-    body: existing?.body ?? '',
+    body: existing?.body ?? prefill?.body ?? '',
     tags: (existing?.tags ?? parent?.tags ?? []).join(' '),
     anchorDate: existing?.anchorDate ?? anchorDate ?? todayKey(),
     presetId: existing?.schedule.presetId ?? store.settings.presetId,
@@ -125,10 +135,10 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
    * 「破棄」で戻す先として使う。本文は読み込みのときに入れる。
    */
   const original = {
-    title: existing?.title ?? '',
+    title: existing?.title ?? prefill?.title ?? '',
     cue: existing?.cue ?? '',
     tags: (existing?.tags ?? parent?.tags ?? []).join(' '),
-    body: existing?.body ?? '',
+    body: existing?.body ?? prefill?.body ?? '',
     doc: null,
   };
 
@@ -151,7 +161,7 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       docUnavailable = true;
       return null;
     }
-    original.doc = stored ?? null;
+    original.doc = stored ?? prefill?.doc ?? null;
 
     if (draftDoc) {
       state.doc = draftDoc;
@@ -168,6 +178,11 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     if (stored) {
       state.doc = stored;
       return stored;
+    }
+    // リンクから書き始めたときは、出どころを置いた状態から始める
+    if (prefill) {
+      state.doc = prefill.doc;
+      return prefill.doc;
     }
     state.doc = existing ? (existing.doc ?? null) : null;
     return markdownToDoc(state.body);
@@ -598,6 +613,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       });
       state.id = created.id;
       lastCreated = { id: created.id, parentId: parentId || null };
+      // とびらのリンクから生まれたメモを数える（学びが残った証）
+      if (source) store.markBookmarkNoted(source.id);
       // すでに画面を離れていたら URL は触らない（戻った先から引き戻さない）
       if (!disposed) replacePath(['note', created.id], { from: returnTo });
     }
@@ -1039,13 +1056,83 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       items: [
         cmdItem('太字', 'bold', (s) => s.commands.bold(), { active: st.bold }),
         cmdItem('斜体', 'italic', (s) => s.commands.italic(), { active: st.italic }),
+        cmdItem('下線', 'underline', (s) => s.commands.underline(), { active: st.underline }),
         cmdItem('打ち消し線', 'strike', (s) => s.commands.strike(), { active: st.strike }),
         cmdItem('コード（行の中）', 'codeTag', (s) => s.commands.code(), { active: st.code }),
+        { divider: true },
+        {
+          label: '文字の色',
+          icon: inkSwatch(st.ink),
+          hint: st.ink ? inkLabel(st.ink) : 'なし',
+          onClick: () => openInkMenu(anchor),
+        },
+        {
+          label: 'マーカー',
+          icon: markerSwatch(st.marker),
+          hint: st.marker ? markerLabel(st.marker) : 'なし',
+          onClick: () => openMarkerMenu(anchor),
+        },
         { divider: true },
         st.link
           ? cmdItem('リンクを外す', 'linkOff', (s) => s.commands.unlink())
           : { label: 'リンク', icon: icon('link', { size: 20 }), onClick: () => askLink() },
       ],
+    });
+  }
+
+  /** 色の見本（文字の色は「A」の色で、マーカーは塗りで見せる） */
+  function inkSwatch(color) {
+    const cls = color ? ` rt-ink--${color}` : '';
+    return `<span class="popover__swatch popover__swatch--ink popover__swatch--none${cls}">A</span>`;
+  }
+
+  function markerSwatch(color) {
+    const cls = color ? ` rt-marker--${color}` : ' popover__swatch--none';
+    return `<span class="popover__swatch${cls}"></span>`;
+  }
+
+  /** 文字の色（色は名前で持つ。配色に合わせて見える色は CSS が決める） */
+  function openInkMenu(anchor) {
+    const st = surface?.state() || {};
+    openPopover({
+      anchor,
+      title: '文字の色',
+      items: [
+        ...INK_COLORS.map(({ id, label }) => ({
+          label,
+          icon: inkSwatch(id),
+          active: st.ink === id,
+          onClick: () => run((s) => s.commands.ink(st.ink === id ? null : id)),
+        })),
+        st.ink ? { divider: true } : null,
+        st.ink ? {
+          label: '色をなくす',
+          icon: icon('close', { size: 20 }),
+          onClick: () => run((s) => s.commands.ink(null)),
+        } : null,
+      ].filter(Boolean),
+    });
+  }
+
+  function openMarkerMenu(anchor) {
+    const st = surface?.state() || {};
+    openPopover({
+      anchor,
+      title: 'マーカー',
+      items: [
+        ...MARKER_COLORS.map(({ id, label }) => ({
+          label,
+          icon: markerSwatch(id),
+          active: st.marker === id,
+          onClick: () => run((s) => s.commands.marker(st.marker === id ? null : id)),
+        })),
+        st.marker ? { divider: true } : null,
+        st.marker ? {
+          label: 'マーカーを外す',
+          icon: icon('close', { size: 20 }),
+          onClick: () => run((s) => s.commands.marker(null)),
+        } : null,
+      ].filter(Boolean),
     });
   }
 
