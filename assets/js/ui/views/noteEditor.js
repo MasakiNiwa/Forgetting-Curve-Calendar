@@ -120,6 +120,18 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
     setTimeout(() => markDirty(), 0);
   }
 
+  /**
+   * 開いた時点のメモ（書きかけを当てる前の姿）。
+   * 「破棄」で戻す先として使う。本文は読み込みのときに入れる。
+   */
+  const original = {
+    title: existing?.title ?? '',
+    cue: existing?.cue ?? '',
+    tags: (existing?.tags ?? parent?.tags ?? []).join(' '),
+    body: existing?.body ?? '',
+    doc: null,
+  };
+
   /** 書きかけの控えに入っていた本文（あれば、そちらを開く） */
   const draftDoc = usableDraft ? normalizeDoc(draft.value?.doc) : null;
   /** 保存されている本文が読めなかったか（読めないまま書かせない） */
@@ -139,12 +151,19 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
       docUnavailable = true;
       return null;
     }
+    original.doc = stored ?? null;
 
     if (draftDoc) {
       state.doc = draftDoc;
       // 見た目だけを直した書きかけ（文字は同じ）も、未保存として扱う
       if (JSON.stringify(draftDoc) !== JSON.stringify(stored ?? null)) markRestored();
       return draftDoc;
+    }
+    // 文字だけの書きかけ（v0.11 以前の控え）も、書いてあったとおりに戻す
+    if (usableDraft && restored) {
+      const fromText = markdownToDoc(state.body);
+      state.doc = fromText;
+      return fromText;
     }
     if (stored) {
       state.doc = stored;
@@ -258,25 +277,33 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
    * 書きかけを復元したときの知らせ。
    * 本文の違いは読み込みのあとで分かるので、あとから出せるようにしておく。
    */
-  const restoreBanner = h('div', { class: 'banner banner--info ed__banner', hidden: !restored },
+  const restoreBanner = h('div', { class: 'banner banner--info ed__banner' },
     h('span', { html: icon('info', { size: 18 }), style: { display: 'flex' } }),
     h('span', { style: { flex: '1' } }, '保存されていなかった書きかけを復元しました。'),
     button('破棄', {
       className: 'btn btn--text btn--sm',
       onClick: () => {
+        // 開いた時点の内容へ戻す。
+        // 復元した書きかけはすぐ保存されるので、「いまのメモ」から戻すと
+        // 書きかけのまま残ってしまう（開いたときの姿を覚えておく）
         clearDraft(key);
-        state.doc = existing?.doc;
-        state.body = existing?.body ?? '';
-        state.title = existing?.title ?? '';
-        state.cue = existing?.cue ?? '';
-        loadStoredDoc().then((doc) => { if (doc) surface?.setDoc(doc); });
+        state.title = original.title;
+        state.cue = original.cue;
+        state.tags = original.tags;
+        state.body = original.body;
+        state.doc = original.doc;
         titleInput.value = state.title;
         cueInput.value = state.cue;
+        surface?.setDoc(original.doc || markdownToDoc(original.body));
         synced = true;
         updateStats({ immediate: true });
         restoreBanner.hidden = true;
+        // 書きかけがすでに保存されていることがあるので、戻したものを書き直す
+        if (state.id) markDirty();
       },
     }));
+  // h() は false の属性を付けない（= hidden: false では隠れない）ので、ここで決める
+  restoreBanner.hidden = !restored;
 
   const findBar = h('div', { class: 'ed__find', hidden: true });
   // 表の中にカーソルがあるときだけ出る、行と列の操作
@@ -798,12 +825,13 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, returnTo
         onClick: () => closeFind(),
       }));
 
-    const replaceRow = h('div', { class: 'ed__find-row ed__find-row--replace', hidden: !find.showReplace },
+    const replaceRow = h('div', { class: 'ed__find-row ed__find-row--replace' },
       h('span', { class: 'ed__find-icon', html: icon('replace', { size: 18 }) }),
       replaceInput,
       button('置き換える', { className: 'btn btn--text btn--sm', onClick: () => replaceCurrent() }),
       button('すべて', { className: 'btn btn--text btn--sm', onClick: () => replaceAll() }));
 
+    replaceRow.hidden = !find.showReplace;
     findBar.append(row, replaceRow);
     findUI = { query, count, replaceInput, replaceRow };
   }

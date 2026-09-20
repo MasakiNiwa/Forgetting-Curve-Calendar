@@ -1,5 +1,12 @@
 /** 最小限の DOM ヘルパー（フレームワーク非依存） */
 
+/**
+ * 要素を作る。
+ *
+ * 注意: 値が false / null / undefined の属性は「付けない」。
+ * `hidden: false` と書いても隠れないので、
+ * 出し入れするものは作ったあとに `el.hidden = …` で決めること。
+ */
 export function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
   Object.entries(props || {}).forEach(([key, value]) => {
