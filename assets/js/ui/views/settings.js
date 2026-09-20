@@ -1,5 +1,5 @@
 /** 設定画面 */
-import { h, button, iconButton } from '../dom.js';
+import { h, button, iconButton, clear } from '../dom.js';
 import { icon } from '../icons.js';
 import { curvePreview } from '../components.js';
 import { confirmDialog, toast, openDialog } from '../overlays.js';
@@ -9,6 +9,7 @@ import {
 } from '../../core/curve.js';
 import { FORMATS } from '../../core/exporter.js';
 import { backupLabel, pickBackupFile, saveBackupFile } from '../backup.js';
+import { notificationState, requestReminderPermission, testReminder } from '../reminders.js';
 import { APP_VERSION } from '../../core/config.js';
 import { formatDateTime, formatDuration } from '../../core/date.js';
 
@@ -59,6 +60,9 @@ export function renderSettings(store) {
 
   /* ---------------- 忘却曲線 ---------------- */
   root.appendChild(renderCurveCard(store));
+
+  /* ---------------- リマインド ---------------- */
+  root.appendChild(reminderCard(store));
 
   /* ---------------- 復習の挙動 ---------------- */
   root.appendChild(h('section', { class: 'card' },
@@ -335,6 +339,93 @@ function renderDataCard(store) {
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * 復習のリマインド。
+ *
+ * 配信用のサーバーを持たないので、届き方は端末とブラウザによって変わる。
+ * できること・できないことを、ここではっきり書いておく。
+ */
+function reminderCard(store) {
+  const card = h('section', { class: 'card' });
+
+  const render = () => {
+    const reminder = store.settings.reminder || {};
+    const permission = notificationState();
+    const supported = permission !== 'unsupported';
+
+    const timeInput = h('input', {
+      class: 'input',
+      type: 'time',
+      value: reminder.time || '20:00',
+      style: { width: 'auto' },
+      disabled: !reminder.enabled,
+      onChange: (e) => {
+        store.updateSettings({ reminder: { ...reminder, time: e.target.value } });
+        toast(`${e.target.value} に知らせます`);
+      },
+    });
+
+    const rows = [
+      h('div', { class: 'card__title' },
+        h('span', { html: icon('clock', { size: 18 }), style: { display: 'flex' } }), '復習のリマインド'),
+      switchRow({
+        title: '毎日のリマインドを受け取る',
+        desc: 'その日の復習があるときだけ、決めた時刻にお知らせします。',
+        checked: reminder.enabled === true,
+        onChange: async (value) => {
+          if (!value) {
+            store.updateSettings({ reminder: { ...reminder, enabled: false } });
+            render();
+            return;
+          }
+          const result = await requestReminderPermission();
+          if (result !== 'granted') {
+            toast(result === 'unsupported'
+              ? 'このブラウザではお知らせを出せません'
+              : 'ブラウザの設定で、通知が止められています');
+            render();
+            return;
+          }
+          store.updateSettings({ reminder: { ...reminder, enabled: true } });
+          toast('リマインドを受け取ります');
+          render();
+        },
+      }),
+    ];
+
+    if (reminder.enabled) {
+      rows.push(
+        h('label', { class: 'field', style: { marginTop: '12px', marginBottom: '0' } },
+          h('span', { class: 'field__label' }, '知らせる時刻'),
+          timeInput),
+        h('div', { class: 'note-card__actions', style: { marginTop: '12px' } },
+          button('いま試す', {
+            className: 'btn btn--tonal btn--sm',
+            icon: icon('play', { size: 16 }),
+            onClick: async () => {
+              const ok = await testReminder(store);
+              toast(ok ? 'お知らせを出しました' : 'お知らせを出せませんでした');
+            },
+          })),
+      );
+    }
+
+    rows.push(h('div', { class: 'field__hint', style: { marginTop: '12px' } },
+      !supported
+        ? 'このブラウザはお知らせに対応していません。'
+        : permission === 'denied'
+          ? 'ブラウザの設定で通知が止められています。サイトの設定から許可すると受け取れます。'
+          : '届き方は端末によって変わります。アプリを開いているあいだは必ず届きます。'
+            + '閉じているあいだに届けられるかは、ブラウザ次第です'
+            + '（ホーム画面に追加しておくと届きやすくなります）。'));
+
+    clear(card).append(...rows);
+  };
+
+  render();
+  return card;
+}
 
 function switchRow({ title, desc, checked, onChange }) {
   return h('label', { class: 'switch' },
