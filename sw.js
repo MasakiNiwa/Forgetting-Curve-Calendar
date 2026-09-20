@@ -7,7 +7,7 @@
  * - バージョンを変えると古いキャッシュを破棄する。
  * - メモのデータはキャッシュではなく localStorage にあるため、ここでは扱わない。
  */
-const VERSION = 'v1.1.2';
+const VERSION = 'v1.1.3';
 const PREFIX = 'fcc-';
 const CACHE = `${PREFIX}${VERSION}`;
 

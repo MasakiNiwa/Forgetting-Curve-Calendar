@@ -1247,7 +1247,8 @@ export function renderNoteEditor(store, { noteId, parentId, anchorDate, fromLink
           label: '開く',
           icon: icon('external', { size: 20 }),
           hint: 'Ctrl+クリック',
-          onClick: () => openLinkTarget(href),
+          // ふつうのリンクとして置く（ポップアップとして止められないように）
+          href,
         },
         {
           label: 'リンクをコピー',
