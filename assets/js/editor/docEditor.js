@@ -150,11 +150,31 @@ export async function createDocEditor(mount, {
    * 文書の中の文字を 1 本に並べ、何文字目がどの位置かを覚えておく。
    * 検索と置換で「見つけた場所」を文書の位置に戻すために使う。
    */
+  /**
+   * 行やマスの切れ目に挟む印。
+   * 探す言葉には出てこない文字なので、これをまたいで当たることはない。
+   */
+  const GAP = '\u0000';
+
   function flatten() {
     let flat = '';
     const map = [];
-    editor.state.doc.descendants((node, pos) => {
+    let lastParent = null;
+    editor.state.doc.descendants((node, pos, parent) => {
+      // 行を分けたところ（Shift+Enter）は、別の行として扱う
+      if (node.type.name === 'hardBreak') {
+        flat += GAP;
+        map.push(pos);
+        lastParent = parent;
+        return;
+      }
       if (!node.isText) return;
+      // 段落・マス・項目が変わったら、そこは続いていない
+      if (lastParent && parent !== lastParent) {
+        flat += GAP;
+        map.push(pos);
+      }
+      lastParent = parent;
       const value = node.text || '';
       for (let i = 0; i < value.length; i += 1) map.push(pos + i);
       flat += value;
@@ -393,10 +413,14 @@ export async function createDocEditor(mount, {
       else if (coords.bottom > rect.bottom - margin) el.scrollTop += coords.bottom - (rect.bottom - margin);
     },
 
-    /** そこへカーソルを移す（検索を閉じるときなど） */
+    /**
+     * そこへカーソルを移す（検索を閉じるときなど）。
+     * 選んだままにせず、見つけた言葉の後ろに置く。
+     * 選択のまま閉じると、次に打った 1 文字でその言葉が消えてしまうため。
+     */
     placeCaret(range) {
       if (!range) return;
-      handle.select(range.from, range.to);
+      handle.select(range.to, range.to);
     },
 
     /** その 1 か所を置き換える */

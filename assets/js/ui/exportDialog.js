@@ -14,6 +14,10 @@ import {
 export async function openExportDialog(store, notes, { title = 'メモを出力', baseName = 'notes' } = {}) {
   // 本文は開いたときに読む作りなので、出す前にそろえておく
   await store.ensureDocs(notes);
+  if (notes.some((note) => store.docUnavailable(note))) {
+    toast('本文を読み込めなかったので、出力を取りやめました。もう一度お試しください。');
+    return null;
+  }
   let formatId = store.settings.defaultExportFormat;
 
   const preview = h('pre', {

@@ -238,7 +238,8 @@ export function openNoteMenu(store, note) {
             danger: true,
           });
           if (!ok) return;
-          const removed = store.deleteNote(note.id);
+          const removed = await store.deleteNote(note.id);
+          if (!removed.length) return;
           toast('削除しました', {
             actionLabel: '元に戻す',
             onAction: () => { store.restoreNotes(removed); toast('復元しました'); },
