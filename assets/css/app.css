@@ -4,6 +4,9 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* display を指定した要素は hidden 属性だけでは隠れないので、ここでまとめて隠す */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
