@@ -21,6 +21,7 @@ import {
   pruneDays, streakAlive,
 } from './missions.js';
 import { drawOmikuji, readOmikuji } from './omikuji.js';
+import { buildPlanDays } from './reminders.js';
 import { migrate } from './migrations.js';
 import { normalizeDoc } from './doc.js';
 import { createDefaultAdapter, splitData } from './storage.js';
@@ -618,6 +619,46 @@ export class Store {
     const counts = new Map();
     this.data.notes.forEach((n) => n.tags.forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
     return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }
+
+  /* ---------------------------------------------------------- リマインド */
+
+  /**
+   * 「いつ・何件あるか」を、閉じているあいだも読めるところへ残す。
+   *
+   * 閉じているあいだは予定を組み直せない（アプリの中身が動いていない）ので、
+   * 開いているうちに数えておき、Service Worker はそれを読むだけにする。
+   */
+  async saveReminder(patch) {
+    if (typeof this.adapter.writeMeta !== 'function') return null;
+    const current = (await this.loadReminder()) || {};
+    const record = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    try {
+      await this.adapter.writeMeta('reminder', record);
+    } catch (err) {
+      console.warn('[fcc] リマインドの予定を残せませんでした', err);
+    }
+    return record;
+  }
+
+  async loadReminder() {
+    if (typeof this.adapter.readMeta !== 'function') return null;
+    try {
+      return (await this.adapter.readMeta('reminder')) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** いまの予定から、これから数日ぶんの件数を数える */
+  reminderPlan({ day = todayKey() } = {}) {
+    const days = buildPlanDays((key) => this.dayBucket(key), { from: day });
+    return {
+      days,
+      todayKey: day,
+      // 今日ぶんは、繰り越しや上限も踏まえた「実際に出る数」
+      todayCount: this.todayQueue(day).items.length,
+    };
   }
 
   /* ---------------------------------------------------------- indexing */

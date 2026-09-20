@@ -122,6 +122,8 @@ export class MemoryAdapter {
   }
 
   async token() { return this.data ? (this.data.meta?.saveToken ?? '') : undefined; }
+  async readMeta(key) { return this.memo?.[key]; }
+  async writeMeta(key, value) { this.memo = { ...(this.memo || {}), [key]: value }; }
   async save(data) { this.saveSync(data); }
 
   /** メモ単位の保存。実装の確認用に、本物のアダプタと同じ形で受ける。 */
@@ -326,6 +328,25 @@ export class IndexedDbAdapter {
       if (record && record.doc) out.set(id, record.doc);
     }));
     return out;
+  }
+
+  /**
+   * 小さな覚え書き（リマインドの予定など）を読み書きする。
+   *
+   * Service Worker からも同じ置き場所を読むので、メモ本体とは別のキーにしておく。
+   * ここに置くのは「閉じているあいだに使う、数えた結果」だけ。
+   */
+  async readMeta(key) {
+    const db = await this.open();
+    const tx = db.transaction([META_STORE], 'readonly');
+    return request(tx.objectStore(META_STORE).get(key));
+  }
+
+  async writeMeta(key, value) {
+    const db = await this.open();
+    const tx = db.transaction([META_STORE], 'readwrite');
+    tx.objectStore(META_STORE).put(value, key);
+    await transactionDone(tx);
   }
 
   async save(data) {

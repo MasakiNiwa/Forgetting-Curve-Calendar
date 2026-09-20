@@ -6,6 +6,7 @@ import { SCHEMA_VERSION, APP_VERSION } from './config.js';
 import { isValidKey, todayKey } from './date.js';
 import { MAX_SHIELDS, createStreak, pruneDays } from './missions.js';
 import { markdownToPlain } from './markdown.js';
+import { DEFAULT_REMINDER, normalizeReminder } from './reminders.js';
 import { docToText, normalizeDoc } from './doc.js';
 import {
   DEFAULT_PRESET_ID, DEFAULT_SPREAD_ID, EASE_DEFAULT, EVENT_TYPES, clampEase, getSpread,
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showCreatedOnCalendar: true,
   defaultExportFormat: 'markdown',
   missionsEnabled: true,      // デイリーミッション（毎日の小さな目標）
+  reminder: { ...DEFAULT_REMINDER },   // 復習のリマインド（受け取るか・知らせる時刻）
 });
 
 /** 墓標（削除済みメモの id -> 削除時刻）。古すぎるものは捨てる。 */
@@ -264,6 +266,7 @@ export function normalizeSettings(raw) {
   s.hideBodyUntilRecall = s.hideBodyUntilRecall !== false;
   s.showCreatedOnCalendar = s.showCreatedOnCalendar !== false;
   s.missionsEnabled = s.missionsEnabled !== false;
+  s.reminder = normalizeReminder(s.reminder);
   s.customIntervals = sanitizeIntervals(s.customIntervals);
   s.spreadId = getSpread(s.spreadId).id;
   const limit = Number(s.overdueDailyLimit);
