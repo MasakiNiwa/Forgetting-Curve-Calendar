@@ -1680,6 +1680,8 @@ a.btn { text-decoration: none; }
   font-size: .72rem;
   font-weight: 700;
   color: var(--fcc-on-surface-variant);
+  /* リンクの行き先を見出しに出すことがあるので、はみ出さないようにする */
+  word-break: break-all;
 }
 .popover .divider { margin: 4px 6px; }
 .popover__item {
@@ -1703,6 +1705,10 @@ a.btn { text-decoration: none; }
 .popover__label { flex: 1; min-width: 0; }
 .popover__hint {
   flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: .68rem;
   color: var(--fcc-on-surface-variant);
   font-variant-numeric: tabular-nums;
@@ -1887,6 +1893,26 @@ a.btn { text-decoration: none; }
   font-variant-numeric: tabular-nums;
 }
 .portal__stat-icon { display: flex; }
+
+/* --- さっき開いたリンク（戻ってきた人を、書くところへ） --- */
+.portal__recent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--fcc-radius-l);
+  background: var(--fcc-secondary-container);
+  color: var(--fcc-on-secondary-container);
+}
+.portal__recent-icon { display: flex; flex: none; }
+.portal__recent-label { font-size: .7rem; font-weight: 700; opacity: .8; }
+.portal__recent-title {
+  font-size: .88rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* --- 今日はこれ（いちばん長く開いていないリンク） --- */
 .portal__pick {

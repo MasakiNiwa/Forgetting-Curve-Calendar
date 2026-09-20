@@ -220,6 +220,7 @@ export async function createDocEditor(mount, {
         underline: editor.isActive('underline'),
         code: editor.isActive('code'),
         link: editor.isActive('link'),
+        linkHref: editor.getAttributes('link')?.href || '',
         // いま当たっている色（名前。無ければ空）
         ink: editor.getAttributes('textColor')?.color || '',
         marker: editor.getAttributes('marker')?.color || '',
@@ -290,7 +291,14 @@ export async function createDocEditor(mount, {
       removeRow: () => chain().deleteRow().run(),
       removeColumn: () => chain().deleteColumn().run(),
       removeTable: () => chain().deleteTable().run(),
-      unlink: () => chain().unsetLink().run(),
+      /** いまカーソルがあるリンクを、まるごと外す */
+      unlink: () => chain().extendMarkRange('link').unsetLink().run(),
+      /** いまカーソルがあるリンクの行き先を差し替える */
+      relink: (href) => {
+        const url = safeLinkHref(href);
+        if (!url) return false;
+        return chain().extendMarkRange('link').setLink({ href: url }).run();
+      },
       /** 選んだ文字をリンクにする（選んでいなければ URL を文字として置く） */
       link: (href) => {
         const url = safeLinkHref(href);

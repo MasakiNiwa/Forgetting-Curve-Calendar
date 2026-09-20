@@ -9,9 +9,11 @@
  *     → 別のタブで開いて読む・見る・聴く
  *       → 戻ってきて、学んだことをメモする（＝忘却曲線に乗る）
  *
- * リンクは必ず**別のタブ**で開く（このアプリは開いたまま残す）。
+ * リンクは必ず**別のところ**で開く（このアプリは開いたまま残す）。
  * 書きかけのメモを抱えたまま画面を奪われないように、`<a target="_blank">`
  * をそのまま使い、アプリ側で画面を切り替えることはしない。
+ * ホーム画面に追加したアプリ（Android）からは、端末のブラウザへ渡す
+ * （`ui/openExternal.js`。アプリの中のブラウザにかぶさられないように）。
  */
 import { h, append, button, iconButton, clear } from './dom.js';
 import { icon } from './icons.js';
@@ -87,6 +89,9 @@ function render(store) {
       statChip('external', `ひらいた ${stats.opens} 回`),
       statChip('notes', `ここから ${stats.notes} 件のメモ`)) : null,
 
+    // 読んで戻ってきた直後は、書き残すところまでを一続きにする
+    recentCard(store, list),
+
     suggestion ? suggestionCard(store, suggestion) : null,
 
     list.length
@@ -119,6 +124,25 @@ function emptyState() {
       h('li', {}, '学習サービス・講座の続きのページ'),
       h('li', {}, '聴きたい番組、見たい動画の一覧'),
       h('li', {}, '興味はあるけれど詳しくない分野の入口')));
+}
+
+/** さっき開いたリンク（読んで戻ってきた人を、書くところまで連れていく） */
+function recentCard(store, list) {
+  const limit = Date.now() - 60 * 60 * 1000;
+  const recent = list
+    .filter((b) => b.openedAt && Date.parse(b.openedAt) >= limit)
+    .sort((a, b) => String(b.openedAt).localeCompare(String(a.openedAt)))[0];
+  if (!recent) return null;
+
+  return h('div', { class: 'portal__recent' },
+    h('span', { class: 'portal__recent-icon', html: icon('edit', { size: 18 }) }),
+    h('div', { style: { flex: '1', minWidth: '0' } },
+      h('div', { class: 'portal__recent-label' }, 'さっき開きました'),
+      h('div', { class: 'portal__recent-title' }, recent.title)),
+    button('メモする', {
+      className: 'btn btn--sm',
+      onClick: () => writeFrom(store, recent),
+    }));
 }
 
 /** 「今日はこれ」— いちばん長く開いていないリンク */
@@ -172,7 +196,7 @@ function openLink(store, bookmark, { label, className = 'btn', card = false } = 
   const onOpen = () => {
     store.markBookmarkOpened(bookmark.id);
     // 戻ってきたときに書き残せるよう、ひと声かけておく
-    toast('学んだことは、戻ってきて書き残そう', {
+    toast('読んだら、戻って書き残そう', {
       actionLabel: 'メモする',
       onAction: () => writeFrom(store, bookmark),
     });
