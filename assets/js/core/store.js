@@ -175,6 +175,59 @@ export class Store {
 
   /* ---------------------------------------------------------- lifecycle */
 
+  /* ---------------------------------------------------------- 本文 */
+
+  /**
+   * 本文（文書データ）は、開いたときに読む。
+   *
+   * 一覧・カレンダー・検索に要るのは「題・手掛かり・素の文字・予定」だけ。
+   * 本文そのものは全体の半分以上を占めるので、起動では読まない。
+   * 読めない保存先（localStorage）では、最初から全部が手元にある。
+   */
+  get lazyDocs() {
+    return typeof this.adapter.loadDocs === 'function';
+  }
+
+  /** そのメモの本文を用意する（すでにあれば何もしない） */
+  async ensureDoc(note) {
+    if (!note) return null;
+    if (note.doc !== undefined) return note.doc;
+    const docs = await this.ensureDocs([note]);
+    return docs.get(note.id) ?? null;
+  }
+
+  /** まとめて用意する（復習の列や、出力するメモの分） */
+  async ensureDocs(notes) {
+    const out = new Map();
+    const wanted = [];
+    (notes || []).forEach((note) => {
+      if (!note) return;
+      if (note.doc !== undefined) { out.set(note.id, note.doc); return; }
+      wanted.push(note);
+    });
+    if (!wanted.length || !this.lazyDocs) {
+      wanted.forEach((note) => { note.doc = note.doc ?? null; out.set(note.id, note.doc); });
+      return out;
+    }
+    let loaded = new Map();
+    try {
+      loaded = await this.adapter.loadDocs(wanted.map((n) => n.id));
+    } catch (err) {
+      console.warn('[fcc] 本文を読めませんでした', err);
+    }
+    wanted.forEach((note) => {
+      // 保存先に無ければ「持っていない」として覚える（何度も読みに行かない）
+      note.doc = loaded.get(note.id) ?? null;
+      out.set(note.id, note.doc);
+    });
+    return out;
+  }
+
+  /** 全部の本文を手元にそろえる（書き出し・まるごと保存の前に） */
+  async ensureAllDocs() {
+    return this.ensureDocs(this.data.notes);
+  }
+
   async load() {
     const raw = await this.adapter.load();
     this.data = raw ? normalizeData(migrate(raw)) : createEmptyData();
@@ -188,7 +241,9 @@ export class Store {
     // 形が変わった（移行した）なら、新しい形で一度だけ書き直す。
     // 起動のたびに読み直す・読み捨てるのを避けるため。
     const migrated = raw && Number(raw.schemaVersion || 1) < SCHEMA_VERSION;
-    if (migrated || raw?.notes?.some((n) => n && n.reviews !== undefined)) {
+    // 本文がメモの中に入ったままの形（v0.14 まで）も、分けて置き直す
+    const inlineDocs = this.lazyDocs && raw?.notes?.some((n) => n && n.doc !== undefined);
+    if (migrated || inlineDocs || raw?.notes?.some((n) => n && n.reviews !== undefined)) {
       this._dirty.all = true;
       // 最初の描画の邪魔をしないよう、少し待ってから
       setTimeout(() => this.schedulePersist(), 1500);
@@ -334,6 +389,9 @@ export class Store {
         }
         // 何を書くかは、取り込みが済んだ「書く直前」に決める
         // （待っている間に増えた変更も、次の保存で必ず拾えるようにする）
+        // まるごと書き直すときは、手元に無い本文も読んでから
+        // （書き出しや取り込みのあとなど。ふだんの保存では起きない）
+        if (this._dirty.all && this.lazyDocs) await this.ensureAllDocs();
         planned = this._takeSavePlan();
         const token = makeSaveToken();
         this.data.meta.updatedAt = new Date().toISOString();
@@ -681,23 +739,35 @@ export class Store {
 
   stats() {
     const today = todayKey();
-    const notes = this.data.notes.filter((n) => n.status !== 'archived');
     const todayBucket = this.dayBucket(today);
     const pendingToday = todayBucket.reviews.filter((r) => r.review.status === 'pending').length;
-    const doneToday = this.data.notes.reduce((acc, note) => acc + note.events.filter(
-      (e) => e.type === 'rate' && e.day === today,
-    ).length, 0);
     const upcoming7 = Array.from({ length: 7 }, (_, i) => this.dayBucket(addDays(today, i))
       .reviews.filter((r) => r.review.status === 'pending').length)
       .reduce((a, b) => a + b, 0);
+
+    // メモが増えるほど効いてくるので、数えるのは 1 周だけにする
     const ratings = { known: 0, vague: 0, forgot: 0 };
-    this.data.notes.forEach((n) => n.events.forEach((e) => {
-      if (e.type === 'rate' && ratings[e.rating] !== undefined) ratings[e.rating] += 1;
-    }));
+    let total = 0;
+    let active = 0;
+    let graduated = 0;
+    let doneToday = 0;
+    this.data.notes.forEach((note) => {
+      if (note.status !== 'archived') {
+        total += 1;
+        if (note.status === 'active') active += 1;
+        else if (note.status === 'graduated') graduated += 1;
+      }
+      note.events.forEach((e) => {
+        if (e.type !== 'rate') return;
+        if (e.day === today) doneToday += 1;
+        if (ratings[e.rating] !== undefined) ratings[e.rating] += 1;
+      });
+    });
+
     return {
-      total: notes.length,
-      active: notes.filter((n) => n.status === 'active').length,
-      graduated: notes.filter((n) => n.status === 'graduated').length,
+      total,
+      active,
+      graduated,
       overdue: this.overdueItems(today).length,
       pendingToday,
       doneToday,

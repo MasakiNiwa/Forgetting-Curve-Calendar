@@ -24,16 +24,52 @@ export function todayKey() {
   return toKey(new Date());
 }
 
+/* ------------------------------------------------------------------ */
+/* 日付の足し算・引き算（Date を作らずに数える）                        */
+/*                                                                      */
+/* メモが増えると、予定を組み直すたびに何十万回も日付を足すことになる。 */
+/* そのたびに Date を作ると、それだけで時間を食う。                     */
+/* ここでは「暦の日付 ↔ 通し日数」を数え上げで変換する（結果は同じ）。   */
+/* 時刻を持たない暦の計算なので、夏時間やタイムゾーンの影響も受けない。 */
+/* ------------------------------------------------------------------ */
+
+/** 'YYYY-MM-DD' -> 1970-01-01 からの通し日数 */
+function keyToDays(key) {
+  const y = Number(key.slice(0, 4));
+  const m = Number(key.slice(5, 7));
+  const d = Number(key.slice(8, 10));
+  // 3 月始まりにすると、うるう日が年の最後に来て数えやすくなる
+  const year = m <= 2 ? y - 1 : y;
+  const era = Math.floor((year >= 0 ? year : year - 399) / 400);
+  const yoe = year - era * 400;                                  // 0..399
+  const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+
+/** 通し日数 -> 'YYYY-MM-DD' */
+function daysToKey(z) {
+  const days = z + 719468;
+  const era = Math.floor((days >= 0 ? days : days - 146096) / 146097);
+  const doe = days - era * 146097;                               // 0..146096
+  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524)
+    - Math.floor(doe / 146096)) / 365);                          // 0..399
+  const year = yoe + era * 400;
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  const mp = Math.floor((5 * doy + 2) / 153);                    // 0..11（3 月始まり）
+  const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const m = mp + (mp < 10 ? 3 : -9);
+  const y = year + (m <= 2 ? 1 : 0);
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 export function addDays(key, days) {
-  const d = fromKey(key);
-  d.setDate(d.getDate() + days);
-  return toKey(d);
+  return daysToKey(keyToDays(key) + Math.round(days));
 }
 
 /** b - a を日数で返す */
 export function diffDays(a, b) {
-  const MS = 86400000;
-  return Math.round((fromKey(b).getTime() - fromKey(a).getTime()) / MS);
+  return keyToDays(b) - keyToDays(a);
 }
 
 export function isValidKey(key) {

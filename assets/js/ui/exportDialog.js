@@ -11,7 +11,9 @@ import {
  * @param {Array} notes 出力対象
  * @param {{title?:string, baseName?:string}} options
  */
-export function openExportDialog(store, notes, { title = 'メモを出力', baseName = 'notes' } = {}) {
+export async function openExportDialog(store, notes, { title = 'メモを出力', baseName = 'notes' } = {}) {
+  // 本文は開いたときに読む作りなので、出す前にそろえておく
+  await store.ensureDocs(notes);
   let formatId = store.settings.defaultExportFormat;
 
   const preview = h('pre', {

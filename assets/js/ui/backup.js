@@ -19,8 +19,10 @@ export function backupLabel(status) {
 }
 
 /** バックアップを 1 つのファイルに保存する */
-export function saveBackupFile(store) {
+export async function saveBackupFile(store) {
   try {
+    // 本文は開いたときに読む作りなので、控えを作る前にそろえておく
+    await store.ensureAllDocs();
     downloadText(
       buildFilename('forgetting-curve-backup', 'json'),
       serializeBackup(store.exportData()),
