@@ -12,8 +12,10 @@
  * リンクは必ず**別のところ**で開く（このアプリは開いたまま残す）。
  * 書きかけのメモを抱えたまま画面を奪われないように、`<a target="_blank">`
  * をそのまま使い、アプリ側で画面を切り替えることはしない。
- * ホーム画面に追加したアプリ（Android）からは、端末のブラウザへ渡す
- * （`ui/openExternal.js`。アプリの中のブラウザにかぶさられないように）。
+ *
+ * ホーム画面に追加したアプリ（Android）では、外のページは
+ * 「アプリの中のブラウザ」で開く。これは Chrome 側の決まりで変えられないので、
+ * 逃げ道（ほかのアプリへ渡す・リンクをコピー）を添えてある（`ui/openExternal.js`）。
  */
 import { h, append, button, iconButton, clear } from './dom.js';
 import { icon } from './icons.js';
@@ -21,6 +23,7 @@ import { openSheet, openDialog, openMenu, confirmDialog, toast } from './overlay
 import { openNoteEditor } from './editor.js';
 import { INK_COLORS } from '../core/inks.js';
 import { MAX_BOOKMARKS, bookmarkHost, bookmarkInitial, safeBookmarkUrl } from '../core/models.js';
+import { canShareLink, opensInAppBrowser, shareLink } from './openExternal.js';
 import { formatRelative } from '../core/date.js';
 import { localDayOf } from '../core/curve.js';
 
@@ -97,6 +100,12 @@ function render(store) {
     list.length
       ? h('div', { class: 'portal__grid' }, ...list.map((b) => bookmarkCard(store, b)))
       : emptyState(),
+
+    list.length && opensInAppBrowser() ? h('p', { class: 'portal__note' },
+      'アプリから開くと、アプリの中のブラウザで開きます（Android の決まりで、'
+      + 'アプリ側からは変えられません）。ふだんのブラウザで読みたいときは、'
+      + '開いたページのメニュー（⋮）から「ブラウザで開く」を選ぶか、'
+      + 'カードの「⋮」→「ほかのアプリで開く」をお使いください。') : null,
 
     h('div', { class: 'portal__foot' },
       button('リンクを追加', {
@@ -245,6 +254,25 @@ function openBookmarkMenu(store, bookmark) {
         onClick: () => writeFrom(store, bookmark),
       },
       { label: '編集する', icon: icon('settings', { size: 20 }), onClick: () => openBookmarkDialog(store, bookmark) },
+      { divider: true },
+      // アプリの中のブラウザではなく、ほかのアプリで読みたいとき
+      canShareLink() ? {
+        label: 'ほかのアプリで開く',
+        icon: icon('external', { size: 20 }),
+        description: 'ふだん使いのブラウザなどに渡す',
+        onClick: async () => {
+          const result = await shareLink(bookmark.url, bookmark.title);
+          if (result === 'unavailable') toast('共有できませんでした');
+        },
+      } : null,
+      {
+        label: 'リンクをコピー',
+        icon: icon('copy', { size: 20 }),
+        onClick: async () => {
+          const { copyText } = await import('../core/exporter.js');
+          toast(await copyText(bookmark.url) ? 'コピーしました' : 'コピーできませんでした');
+        },
+      },
       { divider: true },
       at > 0 ? {
         label: '上へ',

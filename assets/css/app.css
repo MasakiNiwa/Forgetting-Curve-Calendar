@@ -2053,6 +2053,16 @@ a.btn { text-decoration: none; }
 .portal__empty-title { font-weight: 700; color: var(--fcc-on-surface); }
 .portal__ideas { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 4px; }
 
+.portal__note {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--fcc-outline-variant);
+  border-radius: var(--fcc-radius-m);
+  font-size: .76rem;
+  line-height: 1.6;
+  color: var(--fcc-on-surface-variant);
+}
+
 .portal__foot { display: flex; flex-direction: column; gap: 6px; }
 
 /* --- 追加・編集のフォーム --- */

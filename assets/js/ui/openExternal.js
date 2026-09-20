@@ -1,21 +1,26 @@
 /**
- * 外のページを開く。
+ * 外のページの開き方。
  *
- * ふつうのブラウザで見ているときは `<a target="_blank">` のままでよい。
- * 困るのは**ホーム画面に追加したアプリ（PWA）**で、
- * Android ではアプリの中のブラウザ（Custom Tab）が上にかぶさって開く。
- * 読みながらアプリへ戻ったり、あとで読み返したりがしにくい。
+ * ## ホーム画面に追加したアプリ（PWA）で起きること
  *
- * そこで Android のインストール版だけ、**端末のブラウザへ渡す**。
- * Android の `intent:` という決まりに沿った URL を開くと、
- * その URL を扱えるアプリ（ふだん使いのブラウザや、動画・音声のアプリ）へ渡される。
+ * Android では、インストールしたアプリから外のページを開くと、
+ * **アプリの中のブラウザ**（Custom Tab）が上にかぶさって開く。
+ * これは Chrome 側の決まりで、ページの書き方では変えられない。
  *
- * 渡せなかったときのために、しばらく画面が動かなければ
- * これまでどおりの開き方に戻す（開かないまま終わらせない）。
+ *   - `<a target="_blank">` でも `window.open()` でも同じ
+ *   - v1.1.1 で `intent:` を使った受け渡しを試したが、実機では変わらなかった
+ *     （`intent:` の行き先もふだん使いのブラウザ＝Chrome になり、
+ *     Chrome は自分宛ての受け渡しを、いまのアプリの中で開き直すため）
+ *
+ * できるのは「別の渡し方を選べるようにしておく」ところまで。
+ *
+ *   - 共有メニューへ渡す（`navigator.share`）。ほかのアプリで開ける
+ *   - リンクをコピーして、自分でブラウザに貼る
+ *   - 開いたページのメニュー（⋮）から「ブラウザで開く」を選ぶ（Chrome 側の機能）
+ *
+ * ふつうのブラウザで見ているときは、これまでどおり新しいタブで開く
+ * （`<a target="_blank">` のまま。ここでは何もしない）。
  */
-
-/** 受け渡しを試してから、戻ってこなかったか見るまでの時間 */
-const HANDOFF_MS = 1200;
 
 /** ホーム画面に追加したアプリとして開いているか */
 export function isInstalledApp() {
@@ -29,36 +34,44 @@ export function isInstalledApp() {
   }
 }
 
-function isAndroid() {
+export function isAndroid() {
   return /Android/i.test(navigator.userAgent || '');
 }
 
 /**
- * Android の受け渡し用の URL にする。
- *
- * `#` から後ろ（ページの中の位置）は、この書き方では持っていけないので、
- * そういう URL は渡さない（＝これまでどおりの開き方にする）。
+ * アプリの中のブラウザで開くことになる場面か。
+ * （案内を出すかどうかの判断にだけ使う）
  */
-export function toIntentUrl(url) {
-  let parsed;
+export function opensInAppBrowser() {
+  return isInstalledApp() && isAndroid();
+}
+
+/** 共有メニューを出せるか */
+export function canShareLink() {
+  return typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+}
+
+/**
+ * リンクを共有メニューへ渡す（ほかのアプリで開くための逃げ道）。
+ * @returns {Promise<'shared'|'cancelled'|'unavailable'>}
+ */
+export async function shareLink(url, title = '') {
+  if (!canShareLink()) return 'unavailable';
   try {
-    parsed = new URL(url);
-  } catch {
-    return null;
+    await navigator.share(title ? { title, url } : { url });
+    return 'shared';
+  } catch (error) {
+    // 自分でやめたときは、何も言わない
+    if (error?.name === 'AbortError') return 'cancelled';
+    return 'unavailable';
   }
-  if (!/^https?:$/.test(parsed.protocol)) return null;
-  if (parsed.hash) return null;
-  const scheme = parsed.protocol.replace(':', '');
-  const rest = url.slice(parsed.protocol.length + 2);
-  return `intent://${rest}#Intent;scheme=${scheme};`
-    + 'action=android.intent.action.VIEW;'
-    + 'category=android.intent.category.BROWSABLE;end';
 }
 
 /** 新しいところで開く（いまの画面はそのまま残す） */
-function openBlank(url) {
+export function openInNewTab(url) {
+  if (!url) return;
   const win = window.open(url, '_blank', 'noopener,noreferrer');
-  if (win) return true;
+  if (win) return;
   // ポップアップが止められたときは、その場のリンクとして押す
   const a = document.createElement('a');
   a.href = url;
@@ -68,68 +81,4 @@ function openBlank(url) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  return true;
-}
-
-/**
- * 外のページを開く。押されたその場（ユーザー操作の中）で呼ぶこと。
- * @param {string} url
- * @returns {boolean} 自分で開いたか（false なら呼び出し側の既定の動きに任せる）
- */
-export function openExternal(url) {
-  if (!url) return false;
-  if (!(isAndroid() && isInstalledApp())) return false;
-
-  const intent = toIntentUrl(url);
-  if (!intent) return false;
-
-  // 受け渡しは新しいところで行う。
-  // 渡せなかったときに、いまの画面（書きかけのメモ）が飛ばされないようにするため
-  const a = document.createElement('a');
-  a.href = intent;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
-  a.style.display = 'none';
-  document.body.appendChild(a);
-
-  let settled = false;
-  const done = () => {
-    if (settled) return;
-    settled = true;
-    window.removeEventListener('blur', done);
-    document.removeEventListener('visibilitychange', onVisible);
-  };
-  function onVisible() {
-    if (document.visibilityState === 'hidden') done();
-  }
-  window.addEventListener('blur', done);
-  document.addEventListener('visibilitychange', onVisible);
-
-  a.click();
-  a.remove();
-
-  // 画面が変わらないまま時間が過ぎたら、渡せなかったとみなして開き直す
-  setTimeout(() => {
-    if (settled) return;
-    done();
-    openBlank(url);
-  }, HANDOFF_MS);
-
-  return true;
-}
-
-/**
- * 画面のどこでも、外のページへのリンクは同じ開き方にする。
- * （とびらのカード・メモの本文・ヘルプの中のリンク…）
- */
-export function watchExternalLinks(root = document) {
-  root.addEventListener('click', (event) => {
-    if (event.defaultPrevented || event.button !== 0) return;
-    // 自分で「新しいタブで開く」を選んだときは、そのまま任せる
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    const link = event.target?.closest?.('a[target="_blank"][href]');
-    if (!link) return;
-    if (!openExternal(link.href)) return;
-    event.preventDefault();
-  });
 }
